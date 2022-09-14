@@ -1,7 +1,7 @@
 # load utils
-from models import *
+from models2 import *
 from helpers import *
-from mesh_render import *
+from render import *
 
 # load modules
 import numpy as np
@@ -15,15 +15,12 @@ import random
 import matplotlib.pyplot as plt
 
 def training_iter(model, dl_list, optimizer, criterion, device = None, img_list = None, verbose = True, batch_size = None, 
-                sample_size = None, lungs_per_batch = 3, spatial_feat = False, xy_feat = False, keep_spatial=False, 
+                sample_size = None, lungs_per_batch = 3, spatial_feat = False,
                 point_resolution = 64, no_encoder = False, train_lungs = []):
     model.train()
     pred = []
     true = []
     loss_epoch = []
-    kl_list = []
-    mse_list = []
-
 
     lungs = np.arange(len(dl_list))         
     aug_multi = int(len(lungs)/len(train_lungs))
@@ -54,8 +51,6 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
 
             y_hat_list = []
             t_list = []
-            mu_list = []
-            logsigma_list = []
             counter = 0
 
             while counter <= lungs_per_batch and len(lungs_tmp) > 0:                                 # for each "random" lung train model
@@ -91,16 +86,13 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 # predict
                 t = t.float().to(device)
                 t = torch.unsqueeze(t, -1)
-                
-                if spatial_feat == True or xy_feat == True:
-                    y_hat = model([x.float().to(device).detach(), img.float().to(device), filter_in.to(device)],  slice_index = slices_leave_out, slice_max = slices_max, resolution = point_resolution, z_resolution = slices_max)
- 
-                elif no_encoder == True:
+
+                if no_encoder == True:
                     y_hat = model([x.float().to(device), torch.tensor(lung).to(device)])
 
                 else:
-                    y_hat = model([x.float().to(device), img.float().to(device)], slice_index = slices_leave_out, slice_max = slices_max)
-
+                    y_hat = model([x.float().to(device).detach(), img.float().to(device), filter_in.to(device)],  slice_index = slices_leave_out, slice_max = slices_max, resolution = point_resolution, z_resolution = slices_max)
+ 
                 y_hat_list.append(y_hat)
                 t_list.append(t)
 
@@ -117,15 +109,6 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
 
             y_hat = torch.cat(y_hat_list)
             t = torch.cat(t_list)
-
-            # if vae == True:
-            #     mu = torch.cat(mu_list)
-            #     logsigma = torch.cat(logsigma_list)
-            #     loss, mse_loss, kl_loss = criterion(y_hat, t, mu, logsigma)
-            #     kl_list.append(kl_loss.detach().cpu().numpy())
-            #     mse_list.append(mse_loss.detach().cpu().numpy())
-
-            # else:
             loss = criterion(y_hat, t)
 
             loss.backward()
@@ -142,24 +125,15 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
     iou_epoch = iou(torch.from_numpy(np.expand_dims(pred,-1)), torch.from_numpy(np.expand_dims(true,-1)))
     dice_epoch = dice_coef(torch.from_numpy(np.expand_dims(pred,-1)), torch.from_numpy(np.expand_dims(true,-1)))    
 
-    # if vae == True:
-    #     kl_epoch = np.mean(np.array(kl_list))
-    #     mse_epoch = np.mean(np.array(mse_list))
-    #     print("KL: ", kl_epoch)
-    #     print("MSE: ", mse_epoch)
-
     return model, loss_epoch, acc_epoch, iou_epoch, dice_epoch
 
-def validation(model, dl_list, criterion, device = None, img_list = None, spatial_feat = False, 
-    resolution = 128, xy_feat = False, keep_spatial = False, no_encoder = False, val_lungs = []):
+def validation(model, dl_list, criterion, device = None, img_list = None, spatial_feat = False, resolution = 128, no_encoder = False, val_lungs = []):
 
     # validation on last lung loaded
     model.eval()
     pred = []
     true = []
     loss_list = []
-    mu_list = []
-    logsigma_list = []
 
     for dataloader, img, lung in zip(dl_list,img_list, val_lungs):
         img = img.unsqueeze(1)
@@ -167,29 +141,15 @@ def validation(model, dl_list, criterion, device = None, img_list = None, spatia
             t = t.float().to(device)
             t = torch.unsqueeze(t, -1)
             
-            if spatial_feat == True or xy_feat == True:
-                y_hat = model([x.float().to(device), img.float().to(device), filter_in.to(device)],resolution = resolution, z_resolution = img.shape[0])  
-            
-            # elif vae == True:
-            #     y_hat, mu, logsigma = model([x.float().to(device), img.float().to(device)])   
-            #     mu_list.append(mu.detach())
-            #     logsigma_list.append(logsigma.detach())
-
-            elif no_encoder == True:
+            if no_encoder == True:
                 y_hat = model([x.float().to(device), torch.tensor(lung).to(device)])
             
             else:
-                y_hat = model([x.float().to(device), img.float().to(device)])
+                y_hat = model([x.float().to(device), img.float().to(device), filter_in.to(device)],resolution = resolution, z_resolution = img.shape[0])  
 
             pred.append(np.squeeze(np.round(torch.sigmoid(y_hat).detach().cpu().numpy())))
             true.append(np.squeeze(t.detach().cpu().numpy()))
 
-            # if vae == True:
-            #     mu = torch.cat(mu_list)
-            #     logsigma = torch.cat(logsigma_list)
-            #     loss, mse_loss, kl_loss = criterion(y_hat, t, mu, logsigma)
-
-            #else:
             loss = criterion(y_hat, t)
 
             loss_list.append(loss.detach().cpu().numpy())
@@ -207,8 +167,7 @@ def validation(model, dl_list, criterion, device = None, img_list = None, spatia
 
 def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience, point_resolution, 
         img_resolution, shape_resolution = 128, verbose = True, device=None, sample_size=None, val_lungs = [], test_lungs =[],
-        weight_decay = 0., augmentations = True, spatial_feat = False, xy_feat = False, keep_spatial = False, global_local = False, 
-        num_blocks = 5, num_feat = 32, no_encoder = False, visualize_epochs = True, proportion = 1.0, 
+        weight_decay = 0., augmentations = True, spatial_feat = False, no_encoder = False, visualize_epochs = True, proportion = 1.0, 
         batch_size_val = 2000, **_):
 
     # set seed
@@ -232,9 +191,6 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
 
     print("Training Lungs: ", train_lungs, "\nValidation Lungs: ", val_lungs)
 
-    if spatial_feat == True or global_local == True:
-        model = pretrain_unet(model, wandb = None, lungs = train_lungs, val_lungs = val_lungs, feat = num_feat, num_blocks = num_blocks, epochs = 10 , retrain = True, verbose = True, device = device, resolution = img_resolution)
-        
     # load data
     dl_list_train, img_list_train = load_data(train_lungs, 
         train = True,
@@ -255,9 +211,6 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
         )
 
     # train with binary cross entropy and ADAM optimizer
-    # if vae == True:
-    #     criterion = vae_loss
-    # else:
     criterion = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr = lr, weight_decay = weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose = True, patience = patience)
@@ -276,26 +229,26 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
     img_list_train = [(img-model.img_mean)/model.img_std for img in img_list_train] 
     img_list_val = [(img-model.img_mean)/model.img_std for img in img_list_val] 
 
-    ref_iou = 0
+    ref_iou = 0.
 
     for epoch in tqdm(range(epochs), disable = not verbose):
 
         # train model
         model, loss_epoch, acc_epoch, iou_epoch, dice_epoch = training_iter(model = model, dl_list = dl_list_train, 
             optimizer = optimizer, criterion = criterion, device = device, img_list=img_list_train, verbose = verbose, 
-            batch_size=batch_size, sample_size=sample_size, spatial_feat = spatial_feat, xy_feat = xy_feat, keep_spatial=keep_spatial,
+            batch_size=batch_size, sample_size=sample_size, spatial_feat = spatial_feat,
             point_resolution=point_resolution, no_encoder = no_encoder, train_lungs = train_lungs)
 
         # validate model
         try:
             loss_val, acc_val, iou_val, dice_val = validation(model = model, dl_list = dl_list_val, criterion = criterion, device = device, 
-                img_list = img_list_val, spatial_feat = spatial_feat, resolution = shape_resolution, xy_feat = xy_feat, keep_spatial = keep_spatial,
+                img_list = img_list_val, spatial_feat = spatial_feat, resolution = shape_resolution, 
                 no_encoder = no_encoder, val_lungs = val_lungs)
         except:
             print("Validation on cpu.")
             model.to("cpu")
             loss_val, acc_val, iou_val, dice_val = validation(model = model, dl_list = dl_list_val, criterion = criterion, device = "cpu", 
-                img_list = img_list_val, spatial_feat = spatial_feat, resolution = shape_resolution, xy_feat = xy_feat, keep_spatial = keep_spatial,
+                img_list = img_list_val, spatial_feat = spatial_feat, resolution = shape_resolution,
                 no_encoder = no_encoder, val_lungs = val_lungs)
             model.to(device)
         try:
@@ -344,24 +297,23 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
         if visualize_epochs == True:
             try:
                 visualize(model, wandb, np.array([0,1,2,3]), img_resolution=img_resolution, 
-                    shape_resolution = shape_resolution, device = device, model_name = str(model_name)+"_epoch_"+str(epoch), spatial_feat = spatial_feat, 
-                    xy_feat = xy_feat, latent_dim = 64, keep_spatial = keep_spatial, no_encoder = no_encoder, max_batch=batch_size_val)
+                    shape_resolution = shape_resolution, device = device, model_name = str(model_name)+"_epoch_"+str(epoch), no_encoder = no_encoder, max_batch=batch_size_val)
             except:
                 print("Visualize on cpu.")
                 model.to("cpu")
-                visualize(model, wandb, np.array([0,1,2,3]), img_resolution=img_resolution, 
-                    shape_resolution = shape_resolution, device = "cpu", model_name = str(model_name)+"_epoch_"+str(epoch), spatial_feat = spatial_feat, 
-                    xy_feat = xy_feat, latent_dim = 64, keep_spatial = keep_spatial, no_encoder = no_encoder, max_batch= batch_size_val)
-                model.to(device)
+                try:
+                    visualize(model, wandb, np.array([0,1,2,3]), img_resolution=img_resolution, 
+                        shape_resolution = shape_resolution, device = "cpu", model_name = str(model_name)+"_epoch_"+str(epoch), no_encoder = no_encoder, max_batch= batch_size_val)
+                    model.to(device)
+                except:
+                    print("No Visualization Possible.")
 
     #torch.save(model.state_dict(), path)
     wandb.save(path,policy = "now")
 
     return model, acc, iou_values, dice, ref_iou
 
-def visualize(model, wandb, lungs, img_resolution = 128, shape_resolution = 128, device = None, 
-    model_name = "", spatial_feat = False, xy_feat = False, latent_dim = 64, keep_spatial = False, no_encoder = False, 
-    max_batch = 5000, **_):
+def visualize(model, wandb, lungs, img_resolution = 128, shape_resolution = 128, device = None, model_name = "", no_encoder = False, max_batch = 5000, **_):
     model.eval()
     
     # load lungs to visualize
@@ -380,8 +332,7 @@ def visualize(model, wandb, lungs, img_resolution = 128, shape_resolution = 128,
     for i, img, mask in zip(lungs, img_list, mask_list):
         mask = mask.moveaxis(0,-1)
         #pred = model_to_voxel(model,device=device, img = img, resolution = shape_resolution, max_batch = 64 ** 3)    
-        pred = model_to_voxel(model,device=device, img = img, resolution = mask.shape[1], z_resolution= mask.shape[-1], max_batch = max_batch, spatial_feat = spatial_feat, 
-            xy_feat = xy_feat, latent_dim = latent_dim, keep_spatial = keep_spatial, no_encoder=no_encoder, lung = i)   
+        pred = model_to_voxel(model,device=device, img = img, resolution = mask.shape[1], z_resolution= mask.shape[-1], max_batch = max_batch, no_encoder=no_encoder, lung = i)   
         pred = pred.cpu().numpy()
         pred = np.moveaxis(pred,-1,0)
         get_ply(mask = pred, ply_filename = "dump/"+model_name+"_lung_"+str(i), from_mask = True, resolution = shape_resolution, device = device)

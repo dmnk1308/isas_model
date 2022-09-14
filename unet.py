@@ -7,7 +7,7 @@ import pandas as pd
 
 from helpers import *
 from models import *
-from mesh_render import *
+from render import *
 import wandb
 
 def training_step_unet(model, dl, optimizer, device = None):

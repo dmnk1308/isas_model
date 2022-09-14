@@ -20,7 +20,7 @@ class Self_attention_block(torch.nn.Module):
         self.feat_reduction = torch.nn.Linear(num_feat_in, num_feat)
 
         # define self attention layer
-        self.attention = torch.nn.MultiheadAttention(num_feat, 8, dropout = 0.1)
+        self.attention = torch.nn.MultiheadAttention(num_feat, 8, dropout = dropout)
 
         # define linear layers for query, key and values of self attention
         self.query_lin = torch.nn.Linear(num_feat,num_feat)
@@ -161,12 +161,10 @@ class Encoder_block(torch.nn.Module):
         x = self.conv2(x)
         if self.layer_norm == True:
             x = self.layer2(x)
-        # if self.last_relu == True:
-        #     x = F.relu(x)  
 
         return x
 
-class EncoderGlobal(torch.nn.Module):
+class Encoder(torch.nn.Module):
     def __init__(self,
                  num_first = 64,
                  num_feat = 64,   # features of first Conv in block
@@ -179,20 +177,25 @@ class EncoderGlobal(torch.nn.Module):
                  dropout = 0.,
                  layer_norm = False,
                  num_feat_out_xy = 16,
+                 spatial_feat = True,
+                 global_feat = False
                  ):
-        super(EncoderGlobal, self).__init__()
+        super(Encoder, self).__init__()
         self.dropout = dropout
         self.layer_norm = layer_norm
         self.num_feat = num_feat
+        self.global_feat = global_feat
+        self.spatial_feat = spatial_feat
 
         # stem
         self.conv1 = nn.Conv2d(in_channels, num_first, kernel_size = 7, stride = 2, padding = 3)
-        #in_channels = num_first
-        #image_resolution = int(image_resolution/2)
+        in_channels = num_first
+        image_resolution = int(image_resolution/2)
         self.layer1 = torch.nn.LayerNorm((in_channels, image_resolution, image_resolution))
+        self.conv_z_first = nn.Conv2d(num_feat, 16, 1)
+        self.conv_volume_first = nn.Conv2d(num_feat, num_feat_out_xy, 1)
 
-
-        # make conv layers
+        ########################### RESNET ENCODER ###########################################
         self.enc_blocks = torch.nn.ModuleList()
         self.conv_skip = torch.nn.ModuleList()
         self.conv_z = torch.nn.ModuleList()
@@ -213,7 +216,10 @@ class EncoderGlobal(torch.nn.Module):
 
                 in_channels = num_feat
             num_feat = in_channels * 2
-            image_resolution = int(image_resolution/2)
+
+            image_resolution = int(image_resolution/2) # adjust resolution due to stem
+        
+        num_blocks = num_blocks + 1 # adjust length of feature map lists due to stem
 
         self.max_pool = nn.MaxPool2d(kernel_size = 2, stride = 2)
 
@@ -223,65 +229,136 @@ class EncoderGlobal(torch.nn.Module):
         # reduce channels
         self.conv_reduction = torch.nn.Conv2d(num_feat, num_feat_out, 1)
 
+        ########################### SELF ATTENTION ###########################################
         num_feat_slices = num_blocks * 16
-        self.self_att1 = Self_attention_block(num_feat_slices, num_feat_attention, pos_enc = True, dropout = dropout)
-        self.self_att2 = Self_attention_block(num_feat_slices, num_feat_attention, dropout = dropout)
-        self.self_att3 = Self_attention_block(num_feat_slices, num_feat_attention, dropout = dropout)#, num_feat_out, extension = extension)
+
+        self.self_att1 = Self_attention_block(num_feat_slices, num_feat_attention, pos_enc = True, dropout = 0.1)
+        self.self_att2 = Self_attention_block(num_feat_slices, num_feat_attention, dropout = 0.1)
+        self.self_att3 = Self_attention_block(num_feat_slices, num_feat_attention, dropout = 0.1)#, num_feat_out, extension = extension)
 
         self.feat_out = torch.nn.Linear(num_feat_slices, num_feat_out)
 
-    def forward(self,z_in, slice_index = None, slice_max = None):
+        ########################### MASKED ATTENTION  ###########################################
+        self.att_blocks_weights = torch.nn.ModuleList()
+        for i in range(int(num_feat_out/32)):
+            self.att_blocks_weights.append(Attention_block(32, dropout = 0.1))
+        self.slice_norm = torch.nn.LayerNorm(num_feat_out)
 
-        # STEM
-        #z_in = self.conv1(z_in)
-        #z_in = self.layer1(z_in)
-        #z_in = F.relu(z_in)
+        # self.att_blocks_feat = torch.nn.ModuleList()
+        # for i in range(int(num_feat_out/32)):
+        #     self.att_blocks_feat.append(Attention_block(32, dropout = dropout))
 
-        c = 0
+        self.reduce_xy = nn.Linear(num_feat_out_xy * num_blocks, num_feat_out_xy)
+
+        self.reduce_xy_norm = torch.nn.LayerNorm(num_feat_out_xy)
+
+        if spatial_feat == True:
+            self.reduce_feat = nn.Linear(num_feat_out + num_feat_out_xy, num_feat_out)
+            self.reduce_feat_norm = torch.nn.LayerNorm(num_feat_out)
+
+
+    def forward(self, data, slice_index = None, slice_max = None):
+
+        x_in, z_in = data
 
         z_slices = []
         z_volumes = []
 
-        # Convolutional Encoder
+        # STEM
+        z_in = self.conv1(z_in)
+        if self.layer_norm == True:
+            z_in = self.layer1(z_in)
+        z_in = F.relu(z_in)
+
+        # save features maps
+        z_slices.append(F.relu(F.avg_pool2d(self.conv_z_first(z_in), kernel_size = (z_in.shape[2], z_in.shape[3])).squeeze()))
+        z_volumes.append(F.relu(self.conv_volume_first(z_in)))
+
+        ########################### RESNET ENCODER ###########################################
         for block, skip, conv_z, conv_volume in zip(self.enc_blocks, self.conv_skip, self.conv_z, self.conv_volume):
             z_tmp = skip(z_in)
             z_in = block(z_in)
-
-            # save xy information
-            #if c == 0:
-                #z_xy = z_in
-                #z_xy = torch.mean(z_xy, axis = 0).squeeze()
-            z_xy = conv_volume(z_in)
-            z_xy = F.dropout(z_xy, p = self.dropout)
-            z_xy = F.relu(z_xy)
-            z_volumes.append(z_xy)
-
             z_in = F.relu(z_in+z_tmp)
 
-            # save slice information
-            z_tmp = conv_z(z_in)
-            z_slices.append(F.relu(F.avg_pool2d(z_tmp, kernel_size = (z_tmp.shape[2], z_tmp.shape[3])).squeeze()))
+            # save features maps
+            z_slices.append(F.relu(F.avg_pool2d(conv_z(z_in), kernel_size = (z_in.shape[2], z_in.shape[3])).squeeze()))
+            z_volumes.append(F.relu(conv_volume(z_in)))
 
             z_in = self.max_pool(z_in)
-            z_in = F.dropout(z_in, p = self.dropout)
-            c += 1
 
-        # pool away spatial structure
-        # z_enc = F.avg_pool2d(z_in, kernel_size = (z_in.shape[2], z_in.shape[3])).squeeze()
-        # z_enc = F.relu(z_enc)
         z_enc = torch.cat(z_slices, dim = 1)
 
-
-        # # self attention layer
+        ########################### SELF ATTENTION  ###########################################
         z_enc_tmp = self.self_att1(z_enc, slice_index, slice_max)
         z_enc_tmp = self.self_att2(z_enc_tmp, slice_index, slice_max)
         z_enc_tmp = self.self_att3(z_enc_tmp, slice_index, slice_max)
         z_enc = z_enc_tmp + z_enc
 
         z_enc = self.feat_out(z_enc)
-        z_enc = F.dropout(z_enc, p = self.dropout)
         z_enc = F.relu(z_enc)
-        return z_enc, z_volumes
+
+        ########################### MASKED ATTENTION  ###########################################
+        xz = positional_encoding(x_in[:,0].unsqueeze(-1), num_encoding_functions = 16, include_input=False)
+        xz = xz.reshape(x_in.shape[0], -1)
+
+        x_att = []
+        x_weights = []
+
+        for i, att_block in enumerate(self.att_blocks_weights):
+            att_feat, att_weights = att_block([z_enc[:, i*32 : (i+1)*32], xz], slice_index = slice_index, slice_max = slice_max)
+            x_weights.append(att_weights)
+            x_att.append(att_feat)
+        slice_weights = torch.stack(x_weights,1) 
+        slice_weights = torch.mean(slice_weights, axis = 1)
+        z_slice = torch.cat(x_att,1) 
+        #if self.layer_norm == True:
+        #    z_slice = self.slice_norm(z_slice)
+        z_mean = torch.mean(z_enc, axis = 0).squeeze() 
+        #z_slice = z_mean + z_slice
+
+        ########################### MASKED ATTENTION FEAT ###########################################
+        # for i, att_block in enumerate(self.att_blocks_feat):
+        #     att_feat, att_weights = att_block([z_enc[:, i*32 : (i+1)*32], xz], slice_index = slice_index, slice_max = slice_max)
+        #     x_att.append(att_feat)
+
+        # z_slice = torch.cat(x_att,1) 
+        
+        # z_mean = torch.mean(z_in, axis = 0).squeeze() 
+        # z_slice = z_mean + z_slice
+
+        if self.spatial_feat == True:
+            ############## XY FEATURES #############
+            z_xy_list = []
+
+            grid = x_in[:,1:].reshape(-1,1,1,2)
+            grid[:,:,:,0] = grid[:,:,:,0] * -1
+
+            for feat_vol in z_volumes:
+                z_xy = torch.einsum("ij, jklm->iklm", slice_weights, feat_vol)
+
+                # interpolate grid points from z
+                z_xy = grid_sample(z_xy, grid, mode = "bicubic", align_corners = False).squeeze()
+                z_xy_list.append(z_xy)
+
+            z_xy = torch.cat(z_xy_list, dim = 1)
+            z_xy = self.reduce_xy(z_xy)
+            #if self.layer_norm == True:
+            #    z_xy = self.reduce_xy_norm(z_xy)
+            z_xy = F.relu(z_xy)
+
+            z_out = torch.cat((z_slice, z_xy), dim = 1)
+            ###########################################
+
+        elif self.global_feat == True:
+            z_out = torch.tile(z_mean, (x_in.shape[0], 1))
+        
+        else:
+            z_out = z_slice
+
+        z_out = F.relu(z_out)
+        z_out = F.dropout(z_out, p = self.dropout)
+
+        return z_out
 
 class Decoder(torch.nn.Module):
     def __init__(self, num_layer = 5, 
@@ -289,13 +366,12 @@ class Decoder(torch.nn.Module):
                  num_nodes_first = 128, 
                  pos_encoding = True, 
                  num_feat_out = 64,
-                 num_feat_out_xy = 32,
+                 num_feat_out_xy = 16,
                  num_encoding_functions = 6,
                  skips = False,
                  dropout = 0.,
                  spatial_feat = False,
                  global_feat = False,
-                 num_blocks = 5,
                  **_):
         super(Decoder, self).__init__()
 
@@ -309,18 +385,6 @@ class Decoder(torch.nn.Module):
         self.skips = skips
         self.global_feat = global_feat
         
-        ########################### ATTENTION STUFF ###########################################
-        self.att_blocks = torch.nn.ModuleList()
-        for i in range(int(num_feat_out/32)):
-            self.att_blocks.append(Attention_block(32, dropout = dropout))
-
-        self.reduce_xy = nn.Linear(num_feat_out_xy * num_blocks, num_feat_out_xy)
-        self.reduce_xy_norm = torch.nn.LayerNorm(num_feat_out_xy)
-
-        if spatial_feat == True:
-            self.reduce_feat = nn.Linear(num_feat_out + num_feat_out_xy, num_feat_out)
-            self.reduce_feat_norm = torch.nn.LayerNorm(num_feat_out)
-
         ########################### OCCUPANCY STUFF ###############################
         # empty lists for layers
         self.layer = torch.nn.ModuleList()
@@ -328,7 +392,11 @@ class Decoder(torch.nn.Module):
 
         # define first layer 
         if pos_encoding == True:
-            self.layer.append(torch.nn.Linear(pos_dim + num_feat_out,num_nodes_first))
+            if spatial_feat == True:
+                num_feat_out_total = num_feat_out + num_feat_out_xy
+            else:
+                num_feat_out_total = num_feat_out
+            self.layer.append(torch.nn.Linear(pos_dim + num_feat_out_total,num_nodes_first))
             self.layer_norm.append(torch.nn.LayerNorm(num_nodes_first))
         
         else:
@@ -339,14 +407,14 @@ class Decoder(torch.nn.Module):
         for i in range(num_layer-1):
             if i == 0:
                 if skips:
-                    self.layer.append(torch.nn.Linear(num_nodes_first+ num_feat_out, num_nodes))                   
+                    self.layer.append(torch.nn.Linear(num_nodes_first+ num_feat_out_total, num_nodes))                   
                 else:
                     self.layer.append(torch.nn.Linear(num_nodes_first, num_nodes))
                 self.layer_norm.append(torch.nn.LayerNorm(num_nodes))
 
             else:
                 if skips:
-                    self.layer.append(torch.nn.Linear(num_nodes + num_feat_out, num_nodes))
+                    self.layer.append(torch.nn.Linear(num_nodes + num_feat_out_total, num_nodes))
                 else:
                     self.layer.append(torch.nn.Linear(num_nodes, num_nodes))        
                 self.layer_norm.append(torch.nn.LayerNorm(num_nodes))
@@ -357,7 +425,7 @@ class Decoder(torch.nn.Module):
         self.activation0 = torch.nn.ReLU()
         self.activation = torch.nn.ReLU()
 
-    def forward(self, data, resolution, slice_index, slice_max):
+    def forward(self, data):
         # data
         x_in, z_in = data  # x are the coordinates, z are the ct images
 
@@ -366,69 +434,17 @@ class Decoder(torch.nn.Module):
             x = positional_encoding(x_in, num_encoding_functions = self.num_encoding_functions, include_input=False)
             x = x.reshape(x.shape[0], -1)
 
-        z_in, z_volume, filter_in = z_in  
-
-        # attention layer
-        xz = positional_encoding(x_in[:,0].unsqueeze(-1), num_encoding_functions = 16, include_input=False)
-        xz = xz.reshape(x_in.shape[0], -1)
-
-        x_att = []
-        x_weights = []
-
-        for i, att_block in enumerate(self.att_blocks):
-            att_feat, att_weights = att_block([z_in[:, i*32 : (i+1)*32], xz], slice_index = slice_index, slice_max = slice_max)
-            x_att.append(att_feat)
-            x_weights.append(att_weights)
-
-        z_slice = torch.cat(x_att,1) 
-        slice_weights = torch.stack(x_weights,1) 
-        slice_weights = torch.mean(slice_weights, axis = 1)
-
-        z_mean = torch.mean(z_in, axis = 0).squeeze() 
-        z_slice = z_mean + z_slice
-
-        if self.spatial_feat == True:
-            ############## XY FEATURES #############
-            z_xy_list = []
-
-            grid = x_in[:,1:].reshape(-1,1,1,2)
-            grid[:,:,:,0] = grid[:,:,:,0] * -1
-
-            #z_xy = z_xy.unsqueeze(0)
-            for feat_vol in z_volume:
-                z_xy = torch.einsum("ij, jklm->iklm", slice_weights, feat_vol)
-
-                # interpolate grid points from z
-                z_xy = grid_sample(z_xy, grid, mode = "bicubic", align_corners = False).squeeze()
-                z_xy_list.append(z_xy)
-
-            z_xy = torch.cat(z_xy_list, dim = 1)
-            z_xy = self.reduce_xy(z_xy)
-            z_xy = self.reduce_xy_norm(z_xy)
-            z_xy = F.relu(z_xy)
-            z_in = torch.cat((z_slice, z_xy), dim = 1)
-            z_in = self.reduce_feat(z_in)
-            z_in = self.reduce_feat_norm(z_in)
-            ###########################################
-
-        elif self.global_feat == True:
-            z_in = torch.tile(z_mean, (x.shape[0], 1))
-        
-        else:
-            z_in = z_slice
-
-        z_in = F.relu(z_in)
         x = torch.cat((x, z_in), dim = 1)          
 
         x = self.layer[0](x)
+        #x = self.layer_norm[0](x)
         x = self.activation0(x)
 
         for i in zip(self.layer[1:-1], self.layer_norm[1:]):
             if self.skips:
                 x = torch.cat((x, z_in), dim = 1)          
-                #x = torch.cat((x,torch.tile(z_mean, (x.shape[0],1))), dim = 1)
             x = i[0](x)
-            x = i[1](x)#, z_mean)
+            x = i[1](x)
             x = self.activation(x)
         x = self.layer[-1](x)
     
@@ -455,7 +471,7 @@ class GloLoNet(torch.nn.Module):
         self.img_mean = nn.parameter.Parameter(torch.Tensor([0.]), requires_grad = False)
         self.img_std = nn.parameter.Parameter(torch.Tensor([1.]), requires_grad = False) 
 
-        self.enc_global = EncoderGlobal(num_feat = num_feat, 
+        self.enc_global = Encoder(num_feat = num_feat, 
                  num_feat_out = num_feat_out, 
                  num_feat_attention = num_feat_attention,
                  num_blocks = num_blocks)
@@ -543,40 +559,42 @@ class GlobalXY(torch.nn.Module):
                  global_feat = False,
                  img_resolution = 128,
                  num_feat_out_xy = 16,
+                 layer_norm = False,
                  **_):
 
         super(GlobalXY, self).__init__()
         self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
         self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
 
-        self.enc_global = EncoderGlobal(num_feat = num_feat, 
+        self.enc_global = Encoder(num_feat = num_feat, 
                  num_feat_out = num_feat_out, 
                  num_feat_attention = num_feat_attention,
                  num_blocks = num_blocks,
                  num_feat_out_xy = num_feat_out_xy,
-                 image_resolution= img_resolution)
+                 global_feat = global_feat,
+                 spatial_feat= spatial_feat,
+                 dropout = dropout,
+                 image_resolution= img_resolution,
+                 layer_norm = layer_norm)
 
         self.dec = Decoder(num_layer = num_layer, 
                  num_nodes = num_nodes, 
                  num_nodes_first = num_nodes_first, 
                  pos_encoding = pos_encoding, 
-                 num_feat = num_feat,
                  num_feat_out = num_feat_out,
+                 num_feat_out_xy = num_feat_out_xy,
                  num_encoding_functions = num_encoding_functions,
                  skips = skips,
                  dropout = dropout,
                  spatial_feat = spatial_feat,
-                 num_feat_out_xy = num_feat_out_xy,
-                 num_blocks = num_blocks,
                  global_feat = True)
 
     def forward(self, data, resolution = 128, z_resolution = None, slice_max = None, slice_index = None):
         x_in, z_in, filter_in = data
-
        ############## GLOBAL FEATURES #############
-        z_global, z_xy = self.enc_global(z_in, slice_index = slice_index, slice_max = slice_max)
+        z_out = self.enc_global([x_in,z_in], slice_index = slice_index, slice_max = slice_max)
 
-        x = self.dec([x_in,[z_global, z_xy, filter_in]],  slice_index = slice_index, slice_max = slice_max, resolution = resolution)
+        x = self.dec([x_in,z_out])
 
         return x
 

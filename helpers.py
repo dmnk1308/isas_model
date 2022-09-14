@@ -4,14 +4,12 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import math
 import random
 from scipy.stats import rankdata
 from torch.nn.init import _calculate_correct_fan
-from PIL import Image, ImageFont, ImageDraw 
 from torch.nn.functional import grid_sample
 import torchvision.transforms.functional as TF
 
@@ -49,10 +47,8 @@ def load_data(lungs,
         mask_target = torch.from_numpy(np.where(mask_raw < 100,  0, 1))[:,::point_resolution,::point_resolution]
 
         img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-        # plt.imsave("test_before.png", img[int(img.shape[0]/2)])
         if img.shape[0] > 50:
             img = resize(img, 50)
-        #     plt.imsave("test_after.png", img[int(img.shape[0]/2)])
         img = torch.from_numpy(img)
         img_no_aug = img[:,::img_resolution,::img_resolution]
   
@@ -80,7 +76,6 @@ def load_data(lungs,
 
             aug = np.array([True, False, False])
             aug[np.random.randint(1, 3)] = True
-            #aug = [True, False, True]
 
             if aug[0]:
                 # padding - fixed scale
@@ -260,9 +255,6 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, return_mask = Fal
     n_samples_occ = int((n_samples-n_surface)/2) + occ_diff
     n_samples_unocc = int((n_samples-n_surface)/2) + unocc_diff
 
-    # n_samples_occ -= np.sum((mask_surface>=100) * (mask_surface<255))
-    # n_samples_unocc -= np.sum((mask_surface>0) * (mask_surface<100))
-
     # invert surface filter mask to sample from other points
     sample_mask = np.invert(final_mask)
 
@@ -341,8 +333,7 @@ def resize(voxel, slices = 50):
     return res
 
 def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolution = None, max_batch = 64 ** 3, 
-    spatial_feat = False, xy_feat = False, latent_dim = 64, sample_latent = False, keep_spatial = False, slice_index = None, 
-    slice_max = None, no_encoder = False, lung = None):
+    slice_index = None, slice_max = None, no_encoder = False, lung = None):
 
     model.eval()
 
@@ -364,13 +355,8 @@ def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolut
     pred = torch.zeros(resolution*resolution*z_resolution).to(device)
 
     # make filter mask
-    if spatial_feat == True or xy_feat == True:
-        filter_mask = np.full((resolution,resolution,z_resolution), True)
-        filter_mask = np.array(np.where(filter_mask.reshape(-1))).squeeze()
-
-    # sample from gaussian
-    if sample_latent == True:
-        z = torch.randn(latent_dim).to(device)
+    filter_mask = np.full((resolution,resolution,z_resolution), True)
+    filter_mask = np.array(np.where(filter_mask.reshape(-1))).squeeze()
 
     num_coord = resolution*resolution*z_resolution
     head = 0
@@ -378,19 +364,15 @@ def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolut
     while head < num_coord:
         idx = np.arange(start = head, stop = min(head + max_batch, num_coord))
         sample_subset = coord[idx]
-        if spatial_feat == True or xy_feat == True:
-            sample_filter = torch.from_numpy(filter_mask[idx]).to(device)
-            y_hat = model((sample_subset.float(), img, sample_filter), resolution = resolution, z_resolution = z_resolution)
-        # elif vae == True and sample_latent == True:
-        #     y_hat = model.dec([sample_subset.float(), z])
-        # elif vae == True:
-        #     y_hat,_,_ = model((sample_subset.float(), img))
-        elif no_encoder == True:
-            y_hat = model((sample_subset.float(), torch.tensor(lung).to(device)))
-        else:
-            y_hat = model((sample_subset.float(), img), slice_index = slice_index, slice_max = slice_max)
-        pred[idx] = y_hat.squeeze().detach()
 
+        if no_encoder == True:
+            y_hat = model((sample_subset.float(), torch.tensor(lung).to(device)))
+
+        else:
+            sample_filter = torch.from_numpy(filter_mask[idx]).to(device)
+            y_hat = model((sample_subset.float(), img, sample_filter), resolution = resolution, z_resolution = z_resolution, slice_max = slice_max, slice_index = slice_index)
+
+        pred[idx] = y_hat.squeeze().detach()
         head += max_batch
 
     pred = pred.reshape(resolution, resolution, z_resolution)
@@ -480,56 +462,6 @@ def get_embedding_function(
         x, num_encoding_functions, include_input, log_sampling
     )
 
-# Siren 
-# use siren activation and initialization from paper 
-def siren_uniform_(tensor: torch.Tensor, mode: str = 'fan_in', c: float = 6):
-    r"""Fills the input `Tensor` with values according to the method
-    described in ` Implicit Neural Representations with Periodic Activation
-    Functions.` - Sitzmann, Martel et al. (2020), using a
-    uniform distribution. The resulting tensor will have values sampled from
-    :math:`\mathcal{U}(-\text{bound}, \text{bound})` where
-    .. math::
-        \text{bound} = \sqrt{\frac{6}{\text{fan\_mode}}}
-    Also known as Siren initialization.
-    Examples:
-        >>> w = torch.empty(3, 5)
-        >>> siren.init.siren_uniform_(w, mode='fan_in', c=6)
-    :param tensor: an n-dimensional `torch.Tensor`
-    :type tensor: torch.Tensor
-    :param mode: either ``'fan_in'`` (default) or ``'fan_out'``. Choosing
-        ``'fan_in'`` preserves the magnitude of the variance of the weights in
-        the forward pass. Choosing ``'fan_out'`` preserves the magnitudes in
-        the backwards pass.s
-    :type mode: str, optional
-    :param c: value used to compute the bound. defaults to 6
-    :type c: float, optional
-    """
-    fan = _calculate_correct_fan(tensor, mode)
-    std = 1 / math.sqrt(fan)
-    bound = math.sqrt(c) * std  # Calculate uniform bounds from standard deviation
-    with torch.no_grad():
-        return tensor.uniform_(-bound, bound)
-    
-class Sine(nn.Module):
-    def __init__(self, w0: float = 1.0):
-        """Sine activation function with w0 scaling support.
-        :param w0: w0 in the activation step `act(x; w0) = sin(w0 * x)`.
-            defaults to 1.0
-        :type w0: float, optional
-        """
-        super(Sine, self).__init__()
-        self.w0 = w0
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._check_input(x)
-        return torch.sin(self.w0 * x)
-
-    @staticmethod
-    def _check_input(x):
-        if not isinstance(x, torch.Tensor):
-            raise TypeError(
-                'input to forward() must be torch.xTensor')
-
 ########### DATA SETS #################
 class Lung_dataset(Dataset):
     
@@ -572,11 +504,6 @@ class Lung_dataset(Dataset):
             X[:2] = X[:2]+((np.random.random_sample(X[:2].shape)-0.5)/(self.resolution/2))
             X[-1] = X[-1]+((np.random.random_sample(X[-1].shape)-0.5)/(self.z_resolution/2))
 
-            # correct at boundaries
-            # X[X < -1] = -1
-            # X[X > 1] = 1 
-
-        #sample_idx = np.array([self.data[0][idx],self.data[1][idx],self.data[2][idx]])
         sample_idx = self.filter_mask[idx]
         
         sample = [X, sample_idx, y, self.weights]
@@ -631,9 +558,6 @@ def dice_loss(input, target):
 
 def dice_coef(input, target):
     smooth = 1.
-
-    #iflat = input.view(-1)
-    #tflat = target.view(-1)
     intersection = (input * target).sum()
     
     return (2. * intersection + smooth) / (input.sum() + target.sum() + smooth) 
@@ -652,3 +576,5 @@ def vae_loss(recon_x, x, mu, logsigma):
     total_loss = kl_loss + rec_loss
 
     return total_loss, rec_loss, kl_loss
+
+    

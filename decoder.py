@@ -4,9 +4,9 @@ import os
 
 from models import *
 from helpers import *
-from mesh_render import *
-from attention_helpers import *
-from attention_models import *
+from render import *
+from training import *
+from models import *
  
 # load modules
 import numpy as np

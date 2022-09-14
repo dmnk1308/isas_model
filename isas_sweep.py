@@ -2,11 +2,10 @@
 import sys
 import os
 
-from models import *
+from models2 import *
 from helpers import *
-from mesh_render import *
-from attention_helpers import *
-from attention_models import *
+from render import *
+from training import *
  
 # load modules
 import numpy as np
@@ -16,10 +15,10 @@ import wandb
 start_sweep = False
 
 if start_sweep == True:
-    model_name = "find_feat" 
+    model_name = "test_sample_batch_size" 
 
     sweep_config = {
-        "name": "find_feat",
+        "name": "test_sample_batch_size",
         "method": "grid", #"random",
         "metric": {
             "name" : "training_loss",
@@ -31,10 +30,13 @@ if start_sweep == True:
 
     # set sizes
     "batch_size": {
-        "value": 1500
+        "values": [1500, 1000]
+        },
+    "batch_size_val": {
+        "value": 1500,
         },
     "sample_size" : {
-        "value": 150000,
+        "values": [50000, 100000, 150000],
         },
 
     # model parameters
@@ -78,10 +80,10 @@ if start_sweep == True:
         "value": 32,
         }, # how many features are used in the self attention layer
     "num_feat_out" : {
-        "values": [64, 256, 512]
+        "value": 64
         },   # how many features are returned in attention layer
     "num_feat_out_xy" : {
-        "values": [16, 32, 64]
+        "value": 32
         },  
     "num_lungs" : {
         "value": 50
@@ -124,23 +126,18 @@ if start_sweep == True:
         "value": False
         },
     "spatial_feat" : {
+        "value": True
+        },
+    "global_feat" : {
         "value": False
         },
-    "xy_feat" : {
-        "value": True
-        },
-    "masked_attention" : {
-        "value": True
-        },
-    "keep_spatial" : {
+    "layer_norm" : {
         "value": False
         },
     "verbose" : {
         "value": True
         },
-    "use_weights" : {
-        "value": False
-        },
+
     # path to model files
     "model_name" : {
         "value": model_name
@@ -154,7 +151,7 @@ if start_sweep == True:
     sweep_id = wandb.sweep(sweep_config, project = "global_model")
 
 else:
-    sweep_id = "n1kl3xws"
+    sweep_id = "1mh0aezf"
 
 #####################################################
 def train_model(config = None):
@@ -165,7 +162,7 @@ def train_model(config = None):
 
         use_cuda = True
         use_cuda = False if not use_cuda else torch.cuda.is_available()
-        device = torch.device('cuda:1' if use_cuda else 'cpu')
+        device = torch.device('cuda:0' if use_cuda else 'cpu')
         torch.cuda.get_device_name(device) if use_cuda else 'cpu'
         print('Using device', device)
 
@@ -178,11 +175,11 @@ def train_model(config = None):
 
         # training
         model, acc, iou_, dice, iou_val = train(model = model, wandb = wandb, device = device, **config)
-        wandb.save("attention_models.py")
+        #wandb.save("attention_models.py")
 
         # visualize
         visualize(model, wandb, np.array([0,1,2, 178, 179, 180, 329,330,331]), device = device, **config)
 
 #####################################################
 
-wandb.agent("dmnk/global_model/"+sweep_id, function = train_model, count=16)
+wandb.agent("dmnk/global_model/"+sweep_id, function = train_model, count=5)
