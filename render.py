@@ -87,7 +87,7 @@ def convert_sdf_samples_to_ply(
     )
 
 def get_ply(model = None, mask = None, from_mask = False, ply_filename = "tmp", 
-            resolution = 128, z_resolution = None, device = None, max_batch=64 ** 3, lung = None, features = None):
+            resolution = 128, z_resolution = None, device = None, max_batch=64 ** 3, lung = None, features = None, slicewise = False, slices = None):
     offset=None
     scale=None
     ply_filename = "/home/dbecker/masterlung/visualization/ply_data/"+ply_filename+".ply"    
@@ -95,6 +95,20 @@ def get_ply(model = None, mask = None, from_mask = False, ply_filename = "tmp",
         print("Writing mask .ply file")
         mask = np.moveaxis(mask, 0, -1)
         mask = torch.from_numpy(mask)
+
+        if slicewise == True:
+
+            f_tmp = mask > 0
+            f_tmp = torch.where(f_tmp)
+            f_tmp = torch.stack(f_tmp,0)
+            mask[f_tmp[0]+1,f_tmp[1]-1,f_tmp[2]] = 1
+            mask[f_tmp[0]+1,f_tmp[1]+1,f_tmp[2]] = 1
+            mask[f_tmp[0]-1,f_tmp[1]+1,f_tmp[2]] = 1
+            mask[f_tmp[0]-1,f_tmp[1]-1,f_tmp[2]] = 1
+            s = list(range(mask.shape[-1]))
+            [s.remove(i) for i in slices]
+            mask[:,:,s] = -1
+
         convert_sdf_samples_to_ply(mask, 
                                     voxel_grid_origin = [-1, -1, -1],
                                     voxel_size = [2.0 / (mask.shape[0]-1), 2.0 / (mask.shape[1]-1), 2.0 / (mask.shape[2]-1)],

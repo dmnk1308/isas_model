@@ -2,11 +2,10 @@
 import sys
 import os
 
-from models import *
+from models2 import *
 from helpers import *
 from render import *
 from training import *
-from models import *
  
 # load modules
 import numpy as np
@@ -27,8 +26,9 @@ model_name = "decoder_point512"
 
 params = {
 # set sizes
-"batch_size": 5000,
-"sample_size" : 500000,
+"batch_size": 1500,
+"batch_size_val": 50000,
+"sample_size" : 150000,
 
 # model parameters
 "epochs" : 10,
@@ -40,17 +40,16 @@ params = {
 "dropout" : 0.0,
 "weight_decay"  : 0.0,
 "patience" : 2,
-"num_encoding_functions" : 6,
-"num_feat" : 10,        # how many features maps are generated in the first conv layer
+"num_encoding_functions" : 10,
+"num_feat" : 128,        # how many features maps are generated in the first conv layer
 "num_feat_attention" : 256, # how many features are used in the self attention layer
 "num_feat_out" : 10,   # how many features are returned in attention layer
-"num_lungs" : 30,
-"val_lungs" : [28,29],#, 178, 179, 180, 329, 330, 331],
-"test_lungs" : [],#, 86, 87, 88, 326, 327, 328],
-"latent_dim" : 32, 
+"num_lungs" : 332,
+"val_lungs" : [0,1],#, 178, 179, 180, 329, 330, 331],
+"test_lungs" : [],
 
 # resolutions
-"point_resolution" : 256,
+"point_resolution" : 128,
 "img_resolution" : 128,
 "shape_resolution" : 128,
 
@@ -66,7 +65,7 @@ params = {
 "verbose" : True,
 "use_weights" : False,
 "no_encoder" : True,
-"visualize_epochs" : True,
+"visualize_epochs" : False,
 
 # path to model files
 "model_name" : model_name,

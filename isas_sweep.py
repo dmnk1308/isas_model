@@ -15,10 +15,10 @@ import wandb
 start_sweep = False
 
 if start_sweep == True:
-    model_name = "test_sample_batch_size" 
+    model_name = "feat_out" 
 
     sweep_config = {
-        "name": "test_sample_batch_size",
+        "name": "feat_out",
         "method": "grid", #"random",
         "metric": {
             "name" : "training_loss",
@@ -30,18 +30,18 @@ if start_sweep == True:
 
     # set sizes
     "batch_size": {
-        "values": [1500, 1000]
+        "value": 1500
         },
     "batch_size_val": {
-        "value": 1500,
+        "value": 1500
         },
     "sample_size" : {
-        "values": [50000, 100000, 150000],
+        "value": 150000
         },
 
     # model parameters
     "epochs" : {
-        "value": 5
+        "value": 4
         },
     "lr" : {
         # "distribution" : "uniform",
@@ -71,7 +71,7 @@ if start_sweep == True:
         "value": 2
         },
     "num_encoding_functions" : {
-        "value": 6
+        "value": 10
         },
     "num_feat" : {
         "value": 64
@@ -80,19 +80,19 @@ if start_sweep == True:
         "value": 32,
         }, # how many features are used in the self attention layer
     "num_feat_out" : {
-        "value": 64
+        "values": [64, 128, 256]
         },   # how many features are returned in attention layer
     "num_feat_out_xy" : {
-        "value": 32
+        "values":[16,32,64]
         },  
     "num_lungs" : {
-        "value": 50
+        "value": 103 # 10 healthy + 50 diseased
         },
     "val_lungs" : {
-        "value":[0, 1, 2, 3, 4]#, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331]
+        "value":[0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331]
         },
     "test_lungs" : {
-        "value": [5, 6, 7, 8, 86, 87, 88, 178, 179, 180, 305, 306, 307, 308, 309, 310, 311, 312, 313]
+        "value": [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
         },
     "latent_dim" : {
         "value": 32
@@ -132,26 +132,28 @@ if start_sweep == True:
         "value": False
         },
     "layer_norm" : {
+        "value": True
+        },
+    "batch_norm" : {
         "value": False
         },
     "verbose" : {
         "value": True
         },
-
+    "pe_freq" : {
+        "value":"2pi",
+        },
     # path to model files
     "model_name" : {
         "value": model_name
         },
-    "batch_norm": {
-        "value" : True
-        }
     }
 
     sweep_config["parameters"] = params
     sweep_id = wandb.sweep(sweep_config, project = "global_model")
 
 else:
-    sweep_id = "1mh0aezf"
+    sweep_id = "yqbe7db6"
 
 #####################################################
 def train_model(config = None):

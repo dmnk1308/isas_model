@@ -11,3 +11,5 @@ archive
 server
 results
 __pycache__
+mask_comp
+test

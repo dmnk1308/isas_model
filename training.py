@@ -28,13 +28,6 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
     
     # create vector with lung ids
     iterator = [iter(dl) for dl in dl_list]         # create an iterator for each lung dataloader (shuffles coordinates randomly)
-    
-        # 1. wir mischen die Lungen durch -> temporäre Lungen
-        # 2. wir nehmen uns die ersten lungs_per_batch Lungen
-        # 3. wir rufen eine Iteration des Iterators auf und lassen das Modell rechnen
-        #     Falls Fehler: überpringe Lunge und Lösche Lunge aus temporären Lungen
-        # 4. wir löschen die Lunge aus dem temporären Lungen
-        # -> 1. bis alle Iterationen durch sind
 
     # training iterations 
     for global_count in tqdm(range(int(sample_size/batch_size)), disable = not verbose):   # compute number of iterations in 1 epoch (sample_size/batch_size)
@@ -64,6 +57,7 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 # 1. decide whether to leave slices out or not
 
                 leave_out = random.randint(0,1)
+                #leave_out = 1
                 if leave_out == 1:# and spatial_feat == False:
                     # determine how many slices are left out
                     number_leave_out = random.randint(5, img.shape[0]-10)
@@ -296,13 +290,13 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
         
         if visualize_epochs == True:
             try:
-                visualize(model, wandb, np.array([0,1,2,3]), img_resolution=img_resolution, 
+                visualize(model, wandb, np.array([0,1,178]), img_resolution=img_resolution, 
                     shape_resolution = shape_resolution, device = device, model_name = str(model_name)+"_epoch_"+str(epoch), no_encoder = no_encoder, max_batch=batch_size_val)
             except:
                 print("Visualize on cpu.")
                 model.to("cpu")
                 try:
-                    visualize(model, wandb, np.array([0,1,2,3]), img_resolution=img_resolution, 
+                    visualize(model, wandb, np.array([0,1,178]), img_resolution=img_resolution, 
                         shape_resolution = shape_resolution, device = "cpu", model_name = str(model_name)+"_epoch_"+str(epoch), no_encoder = no_encoder, max_batch= batch_size_val)
                     model.to(device)
                 except:

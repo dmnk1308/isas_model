@@ -22,6 +22,7 @@ def load_data(lungs,
     return_mask = False, 
     augmentations = False,
     unet = False,
+    unet3D = False,
     proportion = 1.0):
 
     point_resolution = int(512/point_resolution)
@@ -39,7 +40,9 @@ def load_data(lungs,
 
     for i in tqdm(lungs):
         mask_raw = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()
-        if mask_raw.shape[0] > 50:
+        if unet3D == True:
+            mask_raw = resize(mask_raw, 64)
+        elif mask_raw.shape[0] > 50:
             mask_raw = resize(mask_raw, 50)
         # mask to sample points
         mask_sample = mask_raw[:,::point_resolution,::point_resolution]        
@@ -47,7 +50,9 @@ def load_data(lungs,
         mask_target = torch.from_numpy(np.where(mask_raw < 100,  0, 1))[:,::point_resolution,::point_resolution]
 
         img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-        if img.shape[0] > 50:
+        if unet3D == True:
+            img = resize(img, 64)
+        elif img.shape[0] > 50:
             img = resize(img, 50)
         img = torch.from_numpy(img)
         img_no_aug = img[:,::img_resolution,::img_resolution]
@@ -200,12 +205,38 @@ def pad_fix(image, segmentation):
     return image, segmentation
 
 
-def voxel_sample(mask_in, flatten = True, n_samples = 1000000, return_mask = False, max_size = True, proportion_sampling = True, proportion = 0.5, verbose = True, train = True):   
+def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, unbalanced = False, return_mask = False, max_size = True, proportion_sampling = True, proportion = 0.5, verbose = True, train = True):   
     mask_in = np.moveaxis(mask_in,0,-1)
 
     if train == False:
         final_mask = np.full(mask_in.shape, True)
         return final_mask
+    
+    if random == True:
+        final_mask = np.full(mask_in.shape, False)
+        
+        samples_occ = np.where(mask_in >= 100,1,0)
+        samples_occ = np.stack(np.where(samples_occ),1)        
+        samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), int(n_samples/2), replace = False)].T
+        final_mask[samples_occ[0], samples_occ[1], samples_occ[2]] = True
+        
+        samples_unocc = np.where(mask_in < 100,1,0)
+        samples_unocc = np.stack(np.where(samples_unocc),1)   
+        samples_unocc = samples_unocc[np.random.choice(np.arange(samples_unocc.shape[0]), int(n_samples/2), replace = False)].T
+        final_mask[samples_unocc[0], samples_unocc[1], samples_unocc[2]] = True
+
+        return final_mask
+    
+    if unbalanced == True:
+        final_mask = np.full(mask_in.shape, False)
+        
+        samples = np.where(mask_in >= 0,1,0)
+        samples = np.stack(np.where(samples),1)        
+        samples = samples[np.random.choice(np.arange(samples.shape[0]), n_samples, replace = False)].T
+        final_mask[samples[0], samples[1], samples[2]] = True
+        
+        return final_mask
+
 
     # make voxel for surface and normal points
     mask_surface = mask_in.copy()
@@ -382,7 +413,7 @@ def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolut
 ################################################################
 # positional encoding
 # copy encoder from NeRF Paper
-def positional_encoding(tensor, num_encoding_functions=6, include_input=True, log_sampling=True, random_sampling=False, attention = False, sigma = 2**4):
+def positional_encoding(tensor, num_encoding_functions=6, include_input=True, log_sampling=True, random_sampling=False, attention = False, sigma = 2**4, freq = 2., pe_freq = "2pi"):
     """Apply positional encoding to the input.
     Args:
         tensor (torch.Tensor): Input tensor to be positionally encoded.
@@ -401,27 +432,33 @@ def positional_encoding(tensor, num_encoding_functions=6, include_input=True, lo
     # Trivially, the input tensor is added to the positional encoding.
     encoding = [tensor] if include_input else []
     frequency_bands = None
+    
+    if pe_freq == "2pi":
+        scale = torch.pi
+    else:
+        scale = 1
+
     if log_sampling == True:
-        frequency_bands = 2 ** torch.linspace(
+        frequency_bands = scale * (freq ** torch.linspace(
             0.0,
             num_encoding_functions - 1,
             num_encoding_functions,
             dtype=tensor.dtype,
             device=tensor.device,
-        )
+        ))
     
     elif random_sampling == True:
         B = np.random.normal(loc = 0, scale = sigma, size = (int(num_encoding_functions/3), 3))
         frequency_bands = torch.pi * B
     
-    elif attention == True:     
-        frequency_bands = 2 ** torch.linspace(
-            0.0,
-            num_encoding_functions - 1,
-            num_encoding_functions,
-            dtype=tensor.dtype,
-            device=tensor.device,
-        )
+    # elif attention == True:     
+    #     frequency_bands = torch.pi * (freq ** torch.linspace(
+    #         0.0,
+    #         num_encoding_functions - 1,
+    #         num_encoding_functions,
+    #         dtype=tensor.dtype,
+    #         device=tensor.device,
+    #     ))
 
     else:
         frequency_bands = torch.linspace(
@@ -471,7 +508,6 @@ class Lung_dataset(Dataset):
         self.resolution = mask.shape[1]
         self.z_resolution = mask.shape[-1]
         self.training = training
-
         # make coordinates of voxel
         x_dim, y_dim, z_dim = mask.shape
         x = np.linspace(-1,1,x_dim)
@@ -499,11 +535,13 @@ class Lung_dataset(Dataset):
         if self.training == True:
             # add random noise
             # Example: img_res 64:
-                    # Abstand zwischen Punkten: 2 * (1/64)
-                    # Sample zwischen 0 und 1; ziehe 0.5 und teile durch 1/32
-            X[:2] = X[:2]+((np.random.random_sample(X[:2].shape)-0.5)/(self.resolution/2))
-            X[-1] = X[-1]+((np.random.random_sample(X[-1].shape)-0.5)/(self.z_resolution/2))
-
+                    # Abstand zwischen Punkten: 2 * (1/64) = 1/32
+                    # Sample zwischen 0 und 1; ziehe 0.5 ab und teile durch 32
+            X[1:] = X[1:]+((np.random.random_sample(X[1:].shape)-0.5)/(self.resolution/2))
+            X[0] = X[0]+((np.random.random_sample(X[0].shape)-0.5)/(self.z_resolution/2))
+            # correct at boundaries
+            X[X < -1] = -1
+            X[X > 1] = 1 
         sample_idx = self.filter_mask[idx]
         
         sample = [X, sample_idx, y, self.weights]
