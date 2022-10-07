@@ -1,8 +1,8 @@
 # load utils
-from models import *
 from helpers import *
 from render import *
-from archive.external_models import *
+import torch.nn.functional as F 
+
 #from end2end_helpers import *
 #from Resnet import *
 
@@ -148,11 +148,10 @@ class Attention_block(torch.nn.Module):
         return x, att_weights
 
 class Encoder_block(torch.nn.Module):
-    def __init__(self, in_feat = 1, out_feat = 32, last_relu = True, layer_norm = False, batch_norm = False, res = None):
+    def __init__(self, in_feat = 1, out_feat = 32, layer_norm = False, batch_norm = False, res = None):
         super(Encoder_block, self).__init__()
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm
-        self.last_relu = last_relu
 
         self.conv1 = nn.Conv2d(in_feat,out_feat,3,padding="same")
         self.conv2 = nn.Conv2d(out_feat,out_feat ,3,padding="same")
@@ -185,7 +184,6 @@ class Encoder(torch.nn.Module):
                  num_blocks = 5,
                  in_channels = 1,
                  image_resolution = 128,
-                 last_relu = True,
                  dropout = 0.,
                  layer_norm = False,
                  batch_norm = False,
@@ -196,6 +194,8 @@ class Encoder(torch.nn.Module):
                  get_weights = False
                  ):
         super(Encoder, self).__init__()
+        
+        # set parameters
         self.dropout = dropout
         self.layer_norm = layer_norm
         self.batch_norm = batch_norm 
@@ -205,39 +205,33 @@ class Encoder(torch.nn.Module):
         self.pe_freq = pe_freq
         self.get_weights = get_weights
 
-        ########################### RESNET ENCODER ###########################################
-        self.enc_blocks = torch.nn.ModuleList()
-        self.conv_skip = torch.nn.ModuleList()
-        self.conv_z = torch.nn.ModuleList()
-        self.conv_volume = torch.nn.ModuleList()
+        # set up lists for layers
+        self.enc_blocks = torch.nn.ModuleList() # Conv Blocks
+        self.conv_skip = torch.nn.ModuleList()  # 1x1 Convs for Skip Connection
+        self.conv_z = torch.nn.ModuleList()     # 1x1 Convs for slice features
+        self.conv_volume = torch.nn.ModuleList()# 1x1 Convs for xy features
 
         for i in range(num_blocks):
+            self.enc_blocks.append(Encoder_block(in_feat = in_channels, out_feat = num_feat, layer_norm = layer_norm, batch_norm = batch_norm, res = image_resolution))
+            self.conv_skip.append(nn.Conv2d(in_channels, num_feat, 1))
+            self.conv_z.append(nn.Conv2d(num_feat, 32, 1))
+            self.conv_volume.append(nn.Conv2d(num_feat, num_feat_out_xy, 1))
+            
+            # double number of output features after every conv block and set input channels to previous number of features
+            # except for the last block
             if i == num_blocks-1:
-                self.enc_blocks.append(Encoder_block(in_feat = in_channels, out_feat = num_feat, layer_norm = layer_norm, batch_norm = batch_norm, last_relu = last_relu, res = image_resolution))
-                self.conv_skip.append(nn.Conv2d(in_channels, num_feat, 1))
-                self.conv_z.append(nn.Conv2d(num_feat, 32, 1))
-                self.conv_volume.append(nn.Conv2d(num_feat, num_feat_out_xy, 1))
-
+                None
             else:
-                self.enc_blocks.append(Encoder_block(in_feat = in_channels, out_feat = num_feat, layer_norm = layer_norm, batch_norm = batch_norm, res = image_resolution))
-                self.conv_skip.append(nn.Conv2d(in_channels, num_feat, 1))
-                self.conv_z.append(nn.Conv2d(num_feat, 32, 1))
-                self.conv_volume.append(nn.Conv2d(num_feat, num_feat_out_xy, 1))
-
-                in_channels = num_feat
-            num_feat = in_channels * 2
-
-            image_resolution = int(image_resolution/2) # adjust resolution 
-        
+                num_feat = int(num_feat *2)
+                in_channels = int(num_feat / 2)
+                
+            # adjust resolution of conv blocks for layer norm 
+            image_resolution = int(image_resolution/2) 
+            
+        # pooling after each Conv Block        
         self.max_pool = nn.MaxPool2d(kernel_size = 2, stride = 2)
 
-        # xy features
-        self.conv_xy = nn.Conv2d(self.num_feat, num_feat_out_xy, 3, padding="same")
-
-        # reduce channels
-        self.conv_reduction = torch.nn.Conv2d(num_feat, num_feat_out, 1)
-
-        ########################### SELF ATTENTION ###########################################
+        ########################### SELF ATTENTION BLOCKS ###########################################
         num_feat_slices = num_blocks * 32
 
         self.self_att1 = Self_attention_block(num_feat_slices, num_feat_attention, pos_enc = True, dropout = 0.1, pe_freq = pe_freq)
@@ -246,35 +240,27 @@ class Encoder(torch.nn.Module):
 
         self.feat_out = torch.nn.Linear(num_feat_slices, num_feat_out)
 
-        ########################### MASKED ATTENTION  ###########################################
-        self.att_blocks_weights = torch.nn.ModuleList()
+        ########################### ATTENTION BLOCKS ###########################################
+        self.att_blocks_weights = torch.nn.ModuleList()   
         for i in range(int(num_feat_out/32)):
             self.att_blocks_weights.append(Attention_block(32, dropout = 0., pe_freq = pe_freq))
-        self.slice_norm = torch.nn.LayerNorm(num_feat_out)
-
         self.reduce_xy = nn.Linear(num_feat_out_xy * num_blocks, num_feat_out_xy)
-
-        self.reduce_xy_norm = torch.nn.LayerNorm(num_feat_out_xy)
-
-        if spatial_feat == True:
-            self.reduce_feat = nn.Linear(num_feat_out + num_feat_out_xy, num_feat_out)
-            self.reduce_feat_norm = torch.nn.LayerNorm(num_feat_out)
 
 
     def forward(self, data, slice_index = None, slice_max = None):
-
         x_in, z_in = data
 
+        # store feature maps for attention and interpolation path
         z_slices = []
         z_volumes = []
 
-        ########################### RESNET ENCODER ###########################################
+        ########################### CONV BLOCKS ###########################################
         for block, skip, conv_z, conv_volume in zip(self.enc_blocks, self.conv_skip, self.conv_z, self.conv_volume):
             z_tmp = skip(z_in)
             z_in = block(z_in)
             z_in = F.relu(z_in+z_tmp)
 
-            # save features maps
+            # save features maps - pool height and width away for slice features
             z_slices.append(F.relu(F.avg_pool2d(conv_z(z_in), kernel_size = (z_in.shape[2], z_in.shape[3])).squeeze()))
             z_volumes.append(F.relu(conv_volume(z_in)))
 
@@ -282,7 +268,7 @@ class Encoder(torch.nn.Module):
 
         z_enc = torch.cat(z_slices, dim = 1)
 
-        ########################### SELF ATTENTION  ###########################################
+        ########################### SELF ATTENTION BLOCKS ###########################################
         z_enc_tmp = self.self_att1(z_enc, slice_index, slice_max)
         z_enc_tmp = self.self_att2(z_enc_tmp, slice_index, slice_max)
         z_enc_tmp = self.self_att3(z_enc_tmp, slice_index, slice_max)
@@ -290,11 +276,15 @@ class Encoder(torch.nn.Module):
 
         z_enc = self.feat_out(z_enc)
         z_enc = F.relu(z_enc)
-
-        ########################### MASKED ATTENTION  ###########################################
+        
+        z_mean = torch.mean(z_enc, axis = 0).squeeze() # for global model
+        
+        ########################### ATTENTION BLOCKS ###########################################
+        # positional encoding for z coordinate of input point
         xz = positional_encoding(x_in[:,0].unsqueeze(-1), num_encoding_functions = 16, include_input=False, pe_freq = self.pe_freq)
         xz = xz.reshape(x_in.shape[0], -1)
 
+        # save slice features and attention weights for each attention block
         x_att = []
         x_weights = []
 
@@ -302,13 +292,13 @@ class Encoder(torch.nn.Module):
             att_feat, att_weights = att_block([z_enc[:, i*32 : (i+1)*32], xz], slice_index = slice_index, slice_max = slice_max)
             x_weights.append(att_weights)
             x_att.append(att_feat)
+        
+        # attention weights
         slice_weights = torch.stack(x_weights,1) 
         slice_weights = torch.mean(slice_weights, axis = 1)
+        
+        # slice features
         z_slice = torch.cat(x_att,1) 
-        #if self.layer_norm == True:
-        #    z_slice = self.slice_norm(z_slice)
-        z_mean = torch.mean(z_enc, axis = 0).squeeze() 
-        #z_slice = z_mean + z_slice
 
         if self.spatial_feat == True:
             ############## XY FEATURES #############
@@ -321,13 +311,12 @@ class Encoder(torch.nn.Module):
                 z_xy = torch.einsum("ij, jklm->iklm", slice_weights, feat_vol)
 
                 # interpolate grid points from z
-                z_xy = grid_sample(z_xy, grid, mode = "bilinear", align_corners = True).squeeze()
+                z_xy = grid_sample(z_xy, grid, mode = "bilinear", align_corners = False).squeeze()
                 z_xy_list.append(z_xy)
 
             z_xy = torch.cat(z_xy_list, dim = 1)
             z_xy = self.reduce_xy(z_xy)
-            #if self.layer_norm == True:
-            #    z_xy = self.reduce_xy_norm(z_xy)
+
             z_xy = F.relu(z_xy)
 
             z_out = torch.cat((z_slice, z_xy), dim = 1)
@@ -336,7 +325,7 @@ class Encoder(torch.nn.Module):
         elif self.global_feat == True:
             z_out = torch.tile(z_mean, (x_in.shape[0], 1))
         
-        else:
+        else: # slice only model
             z_out = z_slice
 
         z_out = F.relu(z_out)
@@ -363,7 +352,7 @@ class Decoder(torch.nn.Module):
                  **_):
         super(Decoder, self).__init__()
 
-        # variables
+        # Set Parameters
         self.spatial_feat = spatial_feat
         self.num_layer = num_layer
         self.pos_enc = pos_encoding
@@ -392,7 +381,7 @@ class Decoder(torch.nn.Module):
             self.layer.append(torch.nn.Linear(3+pos_dim,num_nodes_first))
             self.layer_norm.append(torch.nn.LayerNorm(num_nodes_first))
             
-        # define num_layer additional layer      
+        # define additional layer      
         for i in range(num_layer-1):
             if i == 0:
                 if skips:
@@ -410,14 +399,11 @@ class Decoder(torch.nn.Module):
                     
         # define last layer with one output node
         self.layer.append(torch.nn.Linear(num_nodes, 1))
-
-        self.activation0 = torch.nn.ReLU()
         self.activation = torch.nn.ReLU()
 
     def forward(self, data):
-        # data
-        x_in, z_in = data  # x are the coordinates, z are the ct images
-
+        x_in, z_in = data  
+        
         # pos. encoding + dimenstion correction
         if self.pos_enc == True:
             x_pe = positional_encoding(x_in, num_encoding_functions = self.num_encoding_functions, include_input=False, pe_freq = self.pe_freq)
@@ -425,74 +411,25 @@ class Decoder(torch.nn.Module):
 
         x = torch.cat((x_pe, z_in), dim = 1)          
 
+        # first layer
         x = self.layer[0](x)
-        #x = self.layer_norm[0](x)
-        x = self.activation0(x)
+        #x = self.layer_norm[0](x)  # decreases validation IoU
+        x = self.activation(x)
 
-        for i in zip(self.layer[1:-1], self.layer_norm[1:]):
+        # subsequent layer
+        for fc, norm in zip(self.layer[1:-1], self.layer_norm[1:]):
             if self.skips:
                 x = torch.cat((x, z_in), dim = 1)          
-            x = i[0](x)
-            x = i[1](x)
+            x = fc(x)
+            x = norm(x)
             x = self.activation(x)
+            
+        # last layer
         x = self.layer[-1](x)
     
         return x
 
-class GloLoNet(torch.nn.Module):
-    def __init__(self, num_layer = 5, 
-                 num_nodes = 512, 
-                 num_nodes_first = 128, 
-                 pos_encoding = True, 
-                 num_feat_attention = 64,
-                 num_feat = 64,
-                 num_feat_out = 64,
-                 num_encoding_functions = 6,
-                 num_blocks = 5,
-                 skips = False,
-                 dropout = 0.,
-                 gated_ext = False,
-                 img_resolution = 128,
-                 **_):
-
-        super(GloLoNet, self).__init__()
-        
-        self.img_mean = nn.parameter.Parameter(torch.Tensor([0.]), requires_grad = False)
-        self.img_std = nn.parameter.Parameter(torch.Tensor([1.]), requires_grad = False) 
-
-        self.enc_global = Encoder(num_feat = num_feat, 
-                 num_feat_out = num_feat_out, 
-                 num_feat_attention = num_feat_attention,
-                 num_blocks = num_blocks)
-
-        self.enc_local = EncoderLocal(num_feat = num_feat, 
-                num_blocks=num_blocks, gated_ext = gated_ext, 
-                img_resolution=img_resolution)
-
-        self.local_gate = nn.Linear(num_feat, 1)
-
-        self.dec = Decoder(num_layer = num_layer, 
-                 num_nodes = num_nodes, 
-                 num_nodes_first = num_nodes_first, 
-                 pos_encoding = pos_encoding, 
-                 num_feat = num_feat,
-                 num_feat_out = num_feat_out,
-                 num_encoding_functions = num_encoding_functions,
-                 skips = skips,
-                 dropout = dropout)
-
-    def forward(self, data, resolution = 128, z_resolution = None):
-        x_in, z_in, filter_in = data
-        z_global = self.enc_global(z_in)
-        z_local = self.enc_local([x_in, z_in, filter_in], resolution = resolution, z_resolution = z_resolution)
-        local_out = torch.sigmoid(self.local_gate(z_local))
-        p = 0.5 * (torch.cos(2*torch.pi*local_out)+1)
-        #print(torch.round(p,decimals = 2))
-        
-        x = self.dec([x_in,[(1-p) * z_global, p * z_local]])
-
-        return x
-
+# Trainable Feature Model
 class MLP_with_feat(torch.nn.Module):
     def __init__(self, num_layer = 5, 
                  num_nodes = 512, 
@@ -500,9 +437,8 @@ class MLP_with_feat(torch.nn.Module):
                  pos_encoding = False, 
                  num_feat = 50,
                  num_lungs = 10,
-                 num_encoding_functions = 6,
-                 skips = True,
-                 num_feat_out_xy = 16, **_):
+                 num_encoding_functions = 10,
+                 skips = True, **_):
         
         super(MLP_with_feat, self).__init__()
 
@@ -510,7 +446,6 @@ class MLP_with_feat(torch.nn.Module):
         self.lungfinger = torch.nn.ParameterList()
         for i in range(num_lungs):
             self.lungfinger.append(torch.nn.parameter.Parameter(torch.randn(num_feat)))
-            #self.lungfinger.append(torch.nn.parameter.Parameter(torch.zeros(num_feat)))
 
         self.dec = Decoder(num_layer = num_layer, 
                  num_nodes = num_nodes, 
@@ -521,8 +456,12 @@ class MLP_with_feat(torch.nn.Module):
                  num_encoding_functions = num_encoding_functions,
                  spatial_feat = False,
                  skips = skips,
-                 dropout = 0.)
+                 dropout = 0.,
+                 pe_freq = "2")
         
+        self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
+        self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
+
     def forward(self, data):
 
         x,z = data  # z is a list with lung ids
@@ -532,8 +471,8 @@ class MLP_with_feat(torch.nn.Module):
 
         return x
 
-
-class GlobalXY(torch.nn.Module):
+# ISAS model
+class ISAS(torch.nn.Module):
     def __init__(self, num_layer = 5, 
                  num_nodes = 512, 
                  num_nodes_first = 128, 
@@ -555,7 +494,9 @@ class GlobalXY(torch.nn.Module):
                  get_weights = False,
                  **_):
 
-        super(GlobalXY, self).__init__()
+        super(ISAS, self).__init__()
+        
+        # Preprocessing - Standardization with mean and standard deviation
         self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
         self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
         self.get_weights = get_weights
@@ -587,16 +528,17 @@ class GlobalXY(torch.nn.Module):
                  global_feat = True, 
                  pe_freq = pe_freq)
 
-    def forward(self, data, resolution = 128, z_resolution = None, slice_max = None, slice_index = None):
+    def forward(self, data, slice_max = None, slice_index = None):
         x_in, z_in, _ = data
 
-       ############## GLOBAL FEATURES #############
+        # Encoder
         if self.get_weights == True:
+            # extract attention weights
             z_out, slice_weights = self.enc_global([x_in,z_in], slice_index = slice_index, slice_max = slice_max)
-
         else:
             z_out = self.enc_global([x_in,z_in], slice_index = slice_index, slice_max = slice_max)
            
+        # Decoder
         x = self.dec([x_in,z_out])
 
         if self.get_weights == True:
@@ -720,18 +662,6 @@ class UNet(torch.nn.Module):
         #x = self.sigmoid(x)
         return x
 
-class FeatExt(torch.nn.Module):
-    def __init__(self, feat = 32, num_blocks = 5):
-        super(FeatExt, self).__init__() 
-        self.enc = Encoder_unet(feat = feat, num_enc_blocks = num_blocks)
-        self.dec = Decoder_unet(feat = feat*(2**(num_blocks-1)), last_relu=False)
-       
-    def forward(self,x):
-        x = self.enc(x)
-        x = self.dec(x)
-
-        return x
-
 
 ################################################################
 ########################### 3D UNET ############################
@@ -826,8 +756,11 @@ class Decoder_3D(torch.nn.Module):
             return x[0]
 
 class UNet_3D(torch.nn.Module):
-    def __init__(self, feat = 32, num_blocks = 5):
+    def __init__(self, feat = 32, num_blocks = 5, **_):
         super(UNet_3D, self).__init__() 
+        self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
+        self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
+
         self.enc = Encoder_3D(feat = feat, num_enc_blocks = num_blocks)
         self.dec = Decoder_3D(feat = feat*(2** (num_blocks-1)), num_dec_blocks = num_blocks-1)
 

@@ -11,6 +11,7 @@ from render import *
 import wandb
 
 def training_step_unet(model, dl, optimizer, device = None):
+
     model.train()
     pred = []
     true = []
@@ -58,8 +59,7 @@ def validation_unet(model, images_val, masks_val, device = None):
     return acc_val, iou_val, dice_val
 
 
-def training_unet(model, wandb, images, masks, optimizer, epochs, feat = 32, num_blocks = 5,
-    verbose = True, device = None, validation = True, images_val = None, masks_val = None, path = None, scheduler = None):
+def training_unet(model, wandb, images, masks, optimizer, epochs, verbose = True, device = None, validation = True, images_val = None, masks_val = None, path = None, scheduler = None):
     
     # load data
     dataset = Dataset_UNet(images, masks)
@@ -67,7 +67,6 @@ def training_unet(model, wandb, images, masks, optimizer, epochs, feat = 32, num
 
     loss = []
     acc = []
-    
     ref_iou = 0
 
     for epoch in tqdm(range(epochs)):
@@ -108,79 +107,13 @@ def training_unet(model, wandb, images, masks, optimizer, epochs, feat = 32, num
 
     return model
 
-def pretrain_unet(model, wandb, lungs, val_lungs, feat, num_blocks, epochs = 10, retrain = False, verbose = True, device = None, resolution = 128):
-
-    unet = UNet(feat = feat, num_blocks = num_blocks)
-    unet.to(device)
-    unet.train()
-    path = "model_checkpoints/UNet/"+str(resolution)+"_"+str(feat)+"_"+str(num_blocks)+".pt"
-
-    if exists(path) and (retrain == False):
-        unet.load_state_dict(torch.load(path, map_location = device))
-        try:
-            model.enc_local.feat_ext = unet.feat_ext
-        except:
-            model.feat_ext = unet.feat_ext
-         
-        print("UNet Loaded.")
-        return model
-
-    else:
-        # load data
-        masks_train = []
-        images_train = []
-        masks_val = []
-        images_val = []
-        
-        resolution = int(512/resolution)
-
-        for i in tqdm(lungs):
-            mask = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()  
-            mask = torch.from_numpy(np.where(mask < 100,  0, 1))[:,::resolution,::resolution]
-            masks_train.append(mask)
-
-            img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-            img = torch.from_numpy(img)[:,::resolution,::resolution]
-            images_train.append(img)
-
-        for i in tqdm(val_lungs):
-            mask = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()  
-            mask = torch.from_numpy(np.where(mask < 100,  0, 1))[:,::resolution,::resolution]
-            masks_val.append(mask)
-
-            img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-            img = torch.from_numpy(img)[:,::resolution,::resolution]
-            images_val.append(img)
-
-        # compute mean and standard deviation of images
-        unet.img_mean = nn.parameter.Parameter(torch.mean(torch.cat(images_train)), requires_grad = False)  
-        unet.img_std = nn.parameter.Parameter(torch.std(torch.cat(images_train)), requires_grad = False)  
-
-        # standardize images    
-        images_train = [(img-unet.img_mean)/unet.img_std for img in images_train] 
-        images_val = [(img-unet.img_mean)/unet.img_std for img in images_val] 
-
-        print("Train UNet:")
-        optimizer = torch.optim.Adam(unet.parameters(), lr = 0.001)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose = True, patience = 5)
-
-        unet = training_unet(unet, wandb, images_train, masks_train, optimizer, epochs, feat, num_blocks, 
-            images_val = images_val, masks_val = masks_val, device = device, path = path, scheduler = scheduler)
-        print("UNet Trained.")
-        try:
-            model.enc_local.feat_ext = unet.feat_ext
-        except:
-            model.feat_ext = unet.feat_ext
-        print("UNet Loaded.")
-        return model
-
 def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32, num_blocks = 5, epochs = 10, 
     verbose = True, device = None, resolution = 128, augmentations = True, patience = 10, **_):
 
     unet = UNet(feat = feat, num_blocks = num_blocks)
     unet.to(device)
     unet.train()
-    path = "model_checkpoints/final_models/unet.pt"
+    path = "model_checkpoints/final_models/unet_48.pt"
 
     # list with all lungs
     train_lungs = [i for i in range(num_lungs)]
@@ -197,7 +130,6 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
         except:
             None
     print("Training Lungs: ", train_lungs, "\nValidation Lungs: ", val_lungs)
-
 
     # load data
     _, images_train, masks_train = load_data(train_lungs, 
@@ -263,18 +195,14 @@ class Dataset_UNet(Dataset):
             
         return sample   
 
-
-
-
-
 if __name__ == "__main__":
 
     use_cuda = True
     use_cuda = False if not use_cuda else torch.cuda.is_available()
-    device = torch.device('cuda:0' if use_cuda else 'cpu')
+    device = torch.device('cuda:1' if use_cuda else 'cpu')
     torch.cuda.get_device_name(device) if use_cuda else 'cpu'
     print('Using device', device)
-
+    #device = "cpu"
     params = {
         "num_lungs" : 332,
         "val_lungs" : [0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331],
@@ -288,30 +216,29 @@ if __name__ == "__main__":
 
     # Train model
     wandb.init(project = "unet", config = params, name = "unet_vis")
-    unet_no_decoder(device = device, wandb = wandb, **params)
+    #unet_no_decoder(device = device, wandb = wandb, **params)
 
     # Create PLY files
     unet = UNet(**params)
-    unet.load_state_dict(torch.load("model_checkpoints/final_models/unet.pt", map_location = device))
-    device = "cpu"
+    unet.load_state_dict(torch.load("model_checkpoints/final_models/unet_48.pt", map_location = device))
+    #device = "cpu"
     unet.to(device)
     unet.eval()
 
     val_lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
-    #val_lungs = [178]
-    _, images_val, masks_val = load_data(val_lungs, 
-        train = True, 
-        point_resolution = 128, 
-        img_resolution = 512, 
-        return_mask = True, 
-        augmentations = False,
-        unet = True)   
+    #val_lungs = [6, 284]
+    # _, images_val, masks_val = load_data(val_lungs, 
+    #     train = True, 
+    #     point_resolution = 128, 
+    #     img_resolution = 512, 
+    #     return_mask = True, 
+    #     augmentations = False,
+    #     unet = True)   
 
-    for img, i in zip(images_val, val_lungs):
-        for j, slice in enumerate(img.numpy()):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
+    # for img, i in zip(images_val, val_lungs):
+    #     for j, slice in enumerate(img.numpy()):
+    #         plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
     
-
     _, images_val, masks_val = load_data(val_lungs, 
         train = True, 
         point_resolution = 128, 
@@ -330,11 +257,16 @@ if __name__ == "__main__":
         y_hat = unet(img.float().to(device).unsqueeze(1)).squeeze().detach().cpu()
         y_hat_tmp = torch.round(torch.sigmoid(y_hat)).flatten()
         mask_tmp = mask.flatten()
-        acc_list.append(np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy()))
-        iou_list.append(iou(y_hat_tmp, mask_tmp).numpy())
-        dice_list.append(dice_coef(y_hat_tmp, mask_tmp).numpy())
+        acc = np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy())
+        acc_list.append(acc)
+        iou_value = iou(y_hat_tmp, mask_tmp).numpy()
+        iou_list.append(iou_value)
+        print(iou_value)
+        dice_value = dice_coef(y_hat_tmp, mask_tmp).numpy()
+        dice_list.append(dice_value)
+        print(dice_value)
         get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
-        wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
+        #wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
 
         pred = torch.round(torch.sigmoid(y_hat)).numpy()
 
@@ -343,10 +275,18 @@ if __name__ == "__main__":
         for j, slice in enumerate(mask.numpy()):
             plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
 
+    iou_test = np.mean(np.array(iou_list))
+    dice_test = np.mean(np.array(dice_list))
+    acc_test = np.mean(np.array(acc_list))
+
+    print("IoU Test: ", iou_test)
+    print("Dice Test ", dice_test)
+    print("Acc Test: ", acc_test)
+
     results = pd.DataFrame({"Lung": val_lungs,
         "Accuracy" : acc_list,
         "Dice" : dice_list,
         "IoU" : iou_list})
     
-    results.to_csv("results/UNet_val_metrics.csv")
+    results.to_csv("results/TEST_2DUNET_metrics.csv")
     wandb.save("results/UNet_val_metrics.csv")

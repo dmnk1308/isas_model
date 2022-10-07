@@ -1,8 +1,5 @@
 data
 visualization
-1.10.0.tar.gz
-cub-1.10.0
-
 folder_archive
 model_checkpoints
 wandb 
@@ -13,3 +10,5 @@ results
 __pycache__
 mask_comp
 test
+slice_vis.py
+__main__.py

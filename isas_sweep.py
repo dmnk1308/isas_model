@@ -171,7 +171,7 @@ def train_model(config = None):
         config = wandb.config
 
         # setup model 
-        model = GlobalXY(**config)
+        model = ISAS(**config)
         model.train()
         model.to(device)
 

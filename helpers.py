@@ -28,7 +28,6 @@ def load_data(lungs,
     point_resolution = int(512/point_resolution)
     img_resolution = int(512/img_resolution)
 
-
     dl_list = []
     img_list = []
     mask_list = []
@@ -40,20 +39,20 @@ def load_data(lungs,
 
     for i in tqdm(lungs):
         mask_raw = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()
-        if unet3D == True:
-            mask_raw = resize(mask_raw, 64)
-        elif mask_raw.shape[0] > 50:
-            mask_raw = resize(mask_raw, 50)
+        #if unet3D == True:
+        mask_raw = resize(mask_raw, 20)
+        # elif mask_raw.shape[0] > 50:
+        #     mask_raw = resize(mask_raw, 50)
         # mask to sample points
         mask_sample = mask_raw[:,::point_resolution,::point_resolution]        
         # mask for targets
         mask_target = torch.from_numpy(np.where(mask_raw < 100,  0, 1))[:,::point_resolution,::point_resolution]
 
         img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-        if unet3D == True:
-            img = resize(img, 64)
-        elif img.shape[0] > 50:
-            img = resize(img, 50)
+        #if unet3D == True:
+        img = resize(img, 20)
+        #elif img.shape[0] > 50:
+         #   img = resize(img, 50)
         img = torch.from_numpy(img)
         img_no_aug = img[:,::img_resolution,::img_resolution]
   
@@ -99,7 +98,7 @@ def load_data(lungs,
                 
 
             if aug[1]:
-                # padding - rescaled 
+                # padding - rescaled -> zoom out
                 img_pad, mask_pad = pad(img,mask_raw)
                 img_pad = img_pad[:,::img_resolution,::img_resolution]*255
                 mask_pad = mask_pad[:,::point_resolution,::point_resolution]*255
@@ -113,8 +112,8 @@ def load_data(lungs,
                 img_list.append(img_pad)
                 mask_list.append(mask_pad_bi)
 
-            # cropping
             if aug[2]:
+                # cropping -> zoom in
                 img_crop, mask_crop = crop(img,mask_raw)
                 img_crop = img_crop[:,::img_resolution,::img_resolution]*255
                 mask_crop = mask_crop[:,::point_resolution,::point_resolution]*255
@@ -216,15 +215,18 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         final_mask = np.full(mask_in.shape, False)
         
         samples_occ = np.where(mask_in >= 100,1,0)
-        samples_occ = np.stack(np.where(samples_occ),1)        
-        samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), int(n_samples/2), replace = False)].T
+        samples_occ = np.stack(np.where(samples_occ),1) 
+        try:       
+            samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), int(n_samples/2), replace = False)].T
+        except:
+            samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), samples_occ.shape[0], replace = False)].T
+            n_samples = int(samples_occ.shape[0]*2)
         final_mask[samples_occ[0], samples_occ[1], samples_occ[2]] = True
         
         samples_unocc = np.where(mask_in < 100,1,0)
         samples_unocc = np.stack(np.where(samples_unocc),1)   
         samples_unocc = samples_unocc[np.random.choice(np.arange(samples_unocc.shape[0]), int(n_samples/2), replace = False)].T
         final_mask[samples_unocc[0], samples_unocc[1], samples_unocc[2]] = True
-
         return final_mask
     
     if unbalanced == True:
@@ -234,14 +236,13 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         samples = np.stack(np.where(samples),1)        
         samples = samples[np.random.choice(np.arange(samples.shape[0]), n_samples, replace = False)].T
         final_mask[samples[0], samples[1], samples[2]] = True
-        
+
         return final_mask
 
 
     # make voxel for surface and normal points
     mask_surface = mask_in.copy()
     mask_in = np.where(mask_in >= 100, 1, 0)
-
     if proportion_sampling == True:
         
         # how many surface points in total
@@ -254,12 +255,12 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         # surface occupied
         surface_occ = ((mask_surface<255) * (mask_surface>=100))
         surface_occ = np.stack(np.where(surface_occ),1)
-        print(len(surface_occ))
         n_surface_occ = int(n_surface/2)
         if n_surface_occ > surface_occ.shape[0]:
             #print("Not enough surface points to sample from.")
             occ_diff = n_surface_occ - surface_occ.shape[0]
             n_surface_occ -= occ_diff
+            n_samples -= n_surface_occ
         surface_occ = surface_occ[np.random.choice(np.arange(surface_occ.shape[0]), n_surface_occ, replace = False)].T
 
         # surface not occupied
@@ -268,9 +269,9 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         n_surface_unocc = int(n_surface/2)
 
         if n_surface_unocc > surface_unocc.shape[0]:
-            #print("Not enough surface points to sample from.")
             unocc_diff = n_surface_unocc - surface_unocc.shape[0]
             n_surface_unocc -= unocc_diff
+            n_samples -= n_surface_unocc
         surface_unocc = surface_unocc[np.random.choice(np.arange(surface_unocc.shape[0]), n_surface_unocc, replace = False)].T
 
         final_mask = np.full(mask_surface.shape, False)
@@ -282,43 +283,52 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         final_mask = ((mask_surface<255) * (mask_surface>0))
         n_surface = np.sum(final_mask)
 
-    # define number of points to sample
-    n_samples_occ = int((n_samples-n_surface)/2) + occ_diff
-    n_samples_unocc = int((n_samples-n_surface)/2) + unocc_diff
-
     # invert surface filter mask to sample from other points
     sample_mask = np.invert(final_mask)
 
-    # occupied points
-    sample_mask_occ = sample_mask * (mask_in == 1)
-    occ = np.stack(np.where(sample_mask_occ),1)
-    if n_samples_occ <= occ.shape[0]:
-        filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
-        final_mask[filter[0], filter[1], filter[2]] = True
+    # #### RANDOM SAMPLE OTHER POINTS
+    occ = np.stack(np.where(sample_mask),1)
+    filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples, replace = False)].T
+    final_mask[filter[0], filter[1], filter[2]] = True
+    # ########################################################################
 
-    else:
-        diff = n_samples_occ - occ.shape[0]
-        if max_size == True:
-            n_samples_occ -= diff
-            n_samples_unocc -= diff
-            if verbose:
-                print("Sample Inbalance - Reduced Sample Size to " + str(n_samples - (2*diff)) + ".")
-        else:
-            n_samples_unocc += diff
-            n_samples_occ -= diff
-            if verbose:
-                print("Sample Inbalance.")
-        filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
-        final_mask[filter[0], filter[1], filter[2]] = True
+    ################################################################
+    # # define number of points to sample
+    # n_samples_occ = int((n_samples-n_surface)/2) + occ_diff
+    # n_samples_unocc = int((n_samples-n_surface)/2) + unocc_diff
 
-    # unoccupied points
-    sample_mask_unocc = sample_mask * (mask_in == 0)
-    unocc = np.stack(np.where(sample_mask_unocc),1)
-    if n_samples_unocc <= unocc.shape[0]:
-        filter = unocc[np.random.choice(np.arange(unocc.shape[0]), n_samples_unocc, replace = False)].T
-        final_mask[filter[0], filter[1], filter[2]] = True
-    else:
-        print("Sample Inbalance - Unoccupied Points.")
+    # # occupied points
+    # sample_mask_occ = sample_mask * (mask_in == 1)
+    # occ = np.stack(np.where(sample_mask_occ),1)
+    # if n_samples_occ <= occ.shape[0]:
+    #     filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
+    #     final_mask[filter[0], filter[1], filter[2]] = True
+
+    # else:
+    #     diff = n_samples_occ - occ.shape[0]
+    #     if max_size == True:
+    #         n_samples_occ -= diff
+    #         n_samples_unocc -= diff
+    #         if verbose:
+    #             print("Sample Inbalance - Reduced Sample Size to " + str(n_samples - (2*diff)) + ".")
+    #     else:
+    #         n_samples_unocc += diff
+    #         n_samples_occ -= diff
+    #         if verbose:
+    #             print("Sample Inbalance.")
+    #     filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
+    #     final_mask[filter[0], filter[1], filter[2]] = True
+
+    # # unoccupied points
+    # sample_mask_unocc = sample_mask * (mask_in == 0)
+    # unocc = np.stack(np.where(sample_mask_unocc),1)
+    # if n_samples_unocc <= unocc.shape[0]:
+    #     filter = unocc[np.random.choice(np.arange(unocc.shape[0]), n_samples_unocc, replace = False)].T
+    #     final_mask[filter[0], filter[1], filter[2]] = True
+    # else:
+    #     print("Sample Inbalance - Unoccupied Points.")
+    ################################################################
+
 
     if flatten == False:
         return final_mask
@@ -364,7 +374,7 @@ def resize(voxel, slices = 50):
     return res
 
 def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolution = None, max_batch = 64 ** 3, 
-    slice_index = None, slice_max = None, no_encoder = False, lung = None):
+    slice_index = None, slice_max = None, no_encoder = False, lung = None, get_weights = False):
 
     model.eval()
 
@@ -392,6 +402,8 @@ def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolut
     num_coord = resolution*resolution*z_resolution
     head = 0
 
+    att = []
+
     while head < num_coord:
         idx = np.arange(start = head, stop = min(head + max_batch, num_coord))
         sample_subset = coord[idx]
@@ -401,19 +413,28 @@ def model_to_voxel(model, device = None, img = None, resolution = 128, z_resolut
 
         else:
             sample_filter = torch.from_numpy(filter_mask[idx]).to(device)
-            y_hat = model((sample_subset.float(), img, sample_filter), resolution = resolution, z_resolution = z_resolution, slice_max = slice_max, slice_index = slice_index)
+            if get_weights == False:
+                y_hat = model((sample_subset.float(), img, sample_filter), slice_max = slice_max, slice_index = slice_index)
+            else:
+                y_hat, weights = model((sample_subset.float(), img, sample_filter), slice_max = slice_max, slice_index = slice_index)
+                att.append(weights.detach().cpu().numpy())
 
         pred[idx] = y_hat.squeeze().detach()
         head += max_batch
 
     pred = pred.reshape(resolution, resolution, z_resolution)
+
+    if get_weights == True:
+        att = np.concatenate(att, axis = 0)
+        return pred, att
+
     return pred
 
 
 ################################################################
 # positional encoding
 # copy encoder from NeRF Paper
-def positional_encoding(tensor, num_encoding_functions=6, include_input=True, log_sampling=True, random_sampling=False, attention = False, sigma = 2**4, freq = 2., pe_freq = "2pi"):
+def positional_encoding(tensor, num_encoding_functions=6, include_input=True, log_sampling=True, random_sampling=False, attention = False, sigma = 2**4, freq = 2., pe_freq = "2"):
     """Apply positional encoding to the input.
     Args:
         tensor (torch.Tensor): Input tensor to be positionally encoded.
@@ -436,7 +457,7 @@ def positional_encoding(tensor, num_encoding_functions=6, include_input=True, lo
     if pe_freq == "2pi":
         scale = torch.pi
     else:
-        scale = 1
+        scale = torch.pi/2
 
     if log_sampling == True:
         frequency_bands = scale * (freq ** torch.linspace(
@@ -450,15 +471,6 @@ def positional_encoding(tensor, num_encoding_functions=6, include_input=True, lo
     elif random_sampling == True:
         B = np.random.normal(loc = 0, scale = sigma, size = (int(num_encoding_functions/3), 3))
         frequency_bands = torch.pi * B
-    
-    # elif attention == True:     
-    #     frequency_bands = torch.pi * (freq ** torch.linspace(
-    #         0.0,
-    #         num_encoding_functions - 1,
-    #         num_encoding_functions,
-    #         dtype=tensor.dtype,
-    #         device=tensor.device,
-    #     ))
 
     else:
         frequency_bands = torch.linspace(
@@ -474,10 +486,6 @@ def positional_encoding(tensor, num_encoding_functions=6, include_input=True, lo
             for axis in range(3):
                 for func in [torch.sin, torch.cos]:
                     encoding.append(func(tensor * freq[axis]))
-        
-        elif attention == True:
-            for func in [torch.sin, torch.cos]:
-                encoding.append(func(tensor/freq))
 
         else:
             for func in [torch.sin, torch.cos]:
@@ -488,16 +496,6 @@ def positional_encoding(tensor, num_encoding_functions=6, include_input=True, lo
         return encoding[0]
     else:
         return torch.cat(encoding, dim=-1)
-
-
-def get_embedding_function(
-    num_encoding_functions=6, include_input=True, log_sampling=True
-):
-    r"""Returns a lambda function that internally calls positional_encoding.
-    """
-    return lambda x: positional_encoding(
-        x, num_encoding_functions, include_input, log_sampling
-    )
 
 ########### DATA SETS #################
 class Lung_dataset(Dataset):
@@ -552,14 +550,6 @@ class Lung_dataset(Dataset):
         return sample
     
 ######################## METRICS #################################
-def psnr(img1, img2):
-    if torch.is_tensor(img1) == False:
-        img1 = torch.from_numpy(img1)
-    if torch.is_tensor(img2) == False:
-        img2 = torch.from_numpy(img2)
-    mse = torch.mean((img1.float() - img2.float()) ** 2)
-    return 20 * torch.log10(torch.tensor(255.0)) - 10 * torch.log10(mse)
-
 def iou_loss(t_hat, target):
 
     # flatten input
@@ -576,11 +566,13 @@ def iou(t_hat, target):
 
     # flatten input
     pred_tmp = torch.flatten(t_hat)
-    target_tmp = torch.flatten(target)
+    target_tmp = torch.flatten(target.float())
 
-    intersection = torch.sum(pred_tmp * target_tmp)
-    union = torch.sum(pred_tmp) + torch.sum(target_tmp) - torch.sum(pred_tmp * target_tmp)
-    iou = torch.div(intersection, union)
+    tp = torch.sum(pred_tmp * target_tmp)
+    fp = torch.sum(pred_tmp == (target_tmp + 1.))
+    fn = torch.sum((pred_tmp + 1.) == target_tmp)
+    union = tp+fp+fn
+    iou = torch.div(tp, union)
     
     return iou
         
@@ -599,20 +591,3 @@ def dice_coef(input, target):
     intersection = (input * target).sum()
     
     return (2. * intersection + smooth) / (input.sum() + target.sum() + smooth) 
-
-def vae_loss(recon_x, x, mu, logsigma):
-    # Reconstruction losses are calculated using Mean Squared Error (MSE) and 
-    # summed over all elements and batch
-    #rec_loss = torch.sum(-(recon_x - x)**2)
-    rec_loss = torch.nn.BCEWithLogitsLoss()(recon_x, x)
-
-    # See Appendix B from VAE paper:
-    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
-    # https://arxiv.org/abs/1312.6114
-    kl_loss = -(0.5 * torch.sum((1+(2*logsigma) - (mu**2) - (torch.exp(logsigma)**2))))
-
-    total_loss = kl_loss + rec_loss
-
-    return total_loss, rec_loss, kl_loss
-
-    

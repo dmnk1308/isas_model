@@ -1,4 +1,5 @@
 from random import shuffle
+import re
 import torch 
 import numpy
 from os.path import exists
@@ -64,7 +65,7 @@ def training_unet(model, wandb, images, masks, optimizer, epochs, feat = 32, num
     
     # load data
     dataset = Dataset_UNet3D(images, masks)
-    dl = DataLoader(dataset, shuffle = True, batch_size = 6)
+    dl = DataLoader(dataset, shuffle = True, batch_size = 3)
 
     loss = []
     acc = []
@@ -157,6 +158,7 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
     unet.img_mean = nn.parameter.Parameter(torch.mean(torch.cat(images_train)), requires_grad = False)  
     unet.img_std = nn.parameter.Parameter(torch.std(torch.cat(images_train)), requires_grad = False)  
 
+
     # standardize images    
     images_train = [(img-unet.img_mean)/unet.img_std for img in images_train] 
     images_val = [(img-unet.img_mean)/unet.img_std for img in images_val] 
@@ -168,12 +170,6 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
         verbose = verbose, device = device, validation = True, images_val = images_val, masks_val = masks_val, path = path, scheduler = scheduler)
 
     unet.eval()
-    for i, img in enumerate(images_val):
-        y_hat = unet(img.float().to(device).unsqueeze(1))
-        y_hat = y_hat.squeeze().detach().cpu().numpy()
-        get_ply(mask=y_hat,  ply_filename = "dump/unet_lung"+str(i), from_mask = True, resolution = 128, device = device)
-        wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
-
     torch.save(unet.state_dict(), path)
 
 
@@ -199,23 +195,19 @@ class Dataset_UNet3D(Dataset):
             
         return sample   
 
-
-
-
-
 if __name__ == "__main__":
 
     use_cuda = True
     use_cuda = False if not use_cuda else torch.cuda.is_available()
-    device = torch.device('cuda:0' if use_cuda else 'cpu')
+    device = torch.device('cuda:1' if use_cuda else 'cpu')
     torch.cuda.get_device_name(device) if use_cuda else 'cpu'
     print('Using device', device)
     #device = "cpu"
 
     params = {
-        "num_lungs" : 103,
+        "num_lungs" : 332,
         "val_lungs" : [0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331],
-        "test_lungs" : [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
+        "test_lungs" : [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304],
         "feat"  : 64,
         "num_blocks" : 5,
         "epochs"    : 50,
@@ -224,30 +216,17 @@ if __name__ == "__main__":
     }
 
     # Train model
-    wandb.init(project = "unet3D", config = params, name = "unet_103")
-    unet_no_decoder(device = device, wandb = wandb, **params)
-    exit()
+    # wandb.init(project = "unet3D", config = params, name = "unet")
+    # unet_no_decoder(device = device, wandb = wandb, **params)
+
     # Create PLY files
-    unet = UNet(**params)
-    unet.load_state_dict(torch.load("model_checkpoints/final_models/unet.pt", map_location = device))
-    device = "cpu"
+    unet = UNet_3D(**params)
+    unet.load_state_dict(torch.load("model_checkpoints/final_models/unet3d.pt", map_location = device))
+    #device = "cpu"
     unet.to(device)
     unet.eval()
 
-    val_lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
-    #val_lungs = [178]
-    _, images_val, masks_val = load_data(val_lungs, 
-        train = True, 
-        point_resolution = 128, 
-        img_resolution = 512, 
-        return_mask = True, 
-        augmentations = False,
-        unet = True)   
-
-    for img, i in zip(images_val, val_lungs):
-        for j, slice in enumerate(img.numpy()):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
-    
+    val_lungs = [86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
 
     _, images_val, masks_val = load_data(val_lungs, 
         train = True, 
@@ -255,7 +234,7 @@ if __name__ == "__main__":
         img_resolution = 128, 
         return_mask = True, 
         augmentations = False,
-        unet = True) 
+        unet3D = True) 
 
     images_val = [((img.to(device)-unet.img_mean)/unet.img_std).cpu() for img in images_val] 
 
@@ -264,26 +243,39 @@ if __name__ == "__main__":
     acc_list = []
 
     for i, img, mask in zip(val_lungs, images_val, masks_val):
-        y_hat = unet(img.float().to(device).unsqueeze(1)).squeeze().detach().cpu()
+        y_hat = unet(img.float().to(device).unsqueeze(0).unsqueeze(0)).squeeze().detach().cpu()
         y_hat_tmp = torch.round(torch.sigmoid(y_hat)).flatten()
         mask_tmp = mask.flatten()
-        acc_list.append(np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy()))
-        iou_list.append(iou(y_hat_tmp, mask_tmp).numpy())
-        dice_list.append(dice_coef(y_hat_tmp, mask_tmp).numpy())
-        get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
-        wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
+        acc = np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy())
+        acc_list.append(acc)
+        iou_value = iou(y_hat_tmp, mask_tmp).numpy()
+        iou_list.append(iou_value)
+        print(iou_value)
+        dice_value = dice_coef(y_hat_tmp, mask_tmp).numpy()
+        dice_list.append(dice_value)
+        print(dice_value)
+        # get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
+        #wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
 
         pred = torch.round(torch.sigmoid(y_hat)).numpy()
 
-        for j, slice in enumerate(pred):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_UNet.png", slice, cmap = "gray")
-        for j, slice in enumerate(mask.numpy()):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
+        # for j, slice in enumerate(pred):
+        #     plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_3DUNet.png", slice, cmap = "gray")
+        # for j, slice in enumerate(mask.numpy()):
+        #     plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
+
+    iou_test = np.mean(np.array(iou_list))
+    dice_test = np.mean(np.array(dice_list))
+    acc_test = np.mean(np.array(acc_list))
+
+    print("IoU Test: ", iou_test)
+    print("Dice Test ", dice_test)
+    print("Acc Test: ", acc_test)
 
     results = pd.DataFrame({"Lung": val_lungs,
         "Accuracy" : acc_list,
         "Dice" : dice_list,
         "IoU" : iou_list})
     
-    results.to_csv("results/UNet_val_metrics.csv")
+    results.to_csv("results/TEST_3DUNET_metrics.csv")
     wandb.save("results/UNet_val_metrics.csv")

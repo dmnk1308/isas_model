@@ -22,13 +22,16 @@ print('Using device', device)
 # set seed
 torch.manual_seed(123)
 np.random.seed(123)
-model_name = "full" 
 
+# name model run
+model_name = "full_50k_border_unb"
+
+# set model parameters
 params = {
 # set sizes
-"batch_size": 1500,
-"batch_size_val": 1500,
-"sample_size" : 150000,
+"batch_size": 500,
+"batch_size_val": 1400,
+"sample_size" : 50000,
 
 # model parameters
 "epochs" : 5,
@@ -39,7 +42,7 @@ params = {
 "num_blocks" : 5,
 "dropout" : 0.0,
 "weight_decay"  : 0.0,
-"patience" : 2,
+"patience" : 20,
 "num_encoding_functions" : 10,
 "num_feat" : 64,        # how many features maps are generated in the first conv layer
 "num_feat_attention" : 32, # how many features are used in the self attention layer
@@ -50,15 +53,12 @@ params = {
 "num_lungs" : 332,
 "val_lungs" : [0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331],
 "test_lungs" : [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304],
-# "val_lungs" : [0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331],
-# "test_lungs" : [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39],
-
 
 # resolutions
 "point_resolution" : 128,
 "img_resolution" : 128,
 "shape_resolution" : 128,
-"proportion" : 0.8,
+"proportion" : 0.5,
 
 # model type
 "augmentations": True,
@@ -66,31 +66,24 @@ params = {
 "skips" : True,
 "siren" : False,
 "spatial_feat" : True,     # use xy-coordinate specific features 
-"global_feat" : False,       # pool over z dimension
+"global_feat" : False,     # pool over z dimension
 "layer_norm" : True,
 "batch_norm" : False,
 "verbose" : True,
-"pe_freq" : "2pi",
+"pe_freq" : "2",
 
 # path to model files
 "model_name" : model_name,
 }
 
-# #####################################################
-# wandb.init(project = "global_model", config = params, name = model_name)
-# wandb.save("/home/dbecker/masterlung/attention_models.py", policy = "now")
+#####################################################
+wandb.init(project = "global_model", config = params, name = model_name)
+wandb.save("/home/dbecker/masterlung/attention_models.py", policy = "now")
 
 # setup model 
-model = GlobalXY(**params)
-#model.load_state_dict(torch.load("model_checkpoints/final_models/" + params["model_name"] +".pt", map_location = device))
+model = ISAS(**params)
 model.train()
 model.to(device)
 
 # training
-model, acc, iou_, dice, iou_val = train(model = model, wandb = wandb, visualize_epochs = True, device = device, **params)
-
-# visualize
-visualize(model, wandb, np.array([3, 4, 5, 0, 1, 178, 179, 180, 329, 330, 331, 2, 86, 87, 88, 326, 327, 328]), max_batch = 2000, device = device, **params)
-
-# visualize mask
-#visualize_mask(327, 332, resolution = 512, device=device)
+model, acc, iou_, dice, iou_val = train(model = model, wandb = wandb, visualize_epochs = False, device = device, **params)
