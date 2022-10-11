@@ -4,7 +4,7 @@ Medical image segmentation is increasingly and successfully improved by the use 
 # Results
 
 ## Benchmarking
-![](figures/Gifs/no_encoder.gif)
+![](figures/Gifs/all_models.gif)
 
 ## Reconstructions
 ![](figures/gify.gif)
