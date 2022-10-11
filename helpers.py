@@ -28,6 +28,7 @@ def load_data(lungs,
     point_resolution = int(512/point_resolution)
     img_resolution = int(512/img_resolution)
 
+
     dl_list = []
     img_list = []
     mask_list = []
@@ -40,7 +41,7 @@ def load_data(lungs,
     for i in tqdm(lungs):
         mask_raw = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()
         #if unet3D == True:
-        mask_raw = resize(mask_raw, 20)
+        mask_raw = resize(mask_raw, 48)
         # elif mask_raw.shape[0] > 50:
         #     mask_raw = resize(mask_raw, 50)
         # mask to sample points
@@ -50,7 +51,7 @@ def load_data(lungs,
 
         img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
         #if unet3D == True:
-        img = resize(img, 20)
+        img = resize(img, 48)
         #elif img.shape[0] > 50:
          #   img = resize(img, 50)
         img = torch.from_numpy(img)
