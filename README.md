@@ -3,17 +3,17 @@ Medical image segmentation is increasingly and successfully improved by the use 
 
 # Results
 ## Benchmarking
-Main Models
-![](figures/Gifs/main_models.gif)
-Main Models (2D)
-![](figures/Gifs/main_model_2d.gif)
-All Models
-![](figures/Gifs/all_models.gif)
+__Main Models (3D)__  
+![](figures/Gifs/main_models.gif)  
+__Main Models (2D)__   
+![](figures/Gifs/main_model_2d.gif)  
+__All Models__  
+![](figures/Gifs/all_models.gif)  
 
 ## Reconstructions
-Non-ARDS
-![](figures/Gifs/interpol6.gif)
-ARDS
-![](figures/Gifs/interpol284.gif)
-Interpolation 2D UNet vs. ISAS (Input: 5 CT slices)
-![](figures/Gifs/isas_unet_compl.gif)
+__Non-ARDS lung__  
+![](figures/Gifs/interpol_6.gif)  
+__ARDS lung__  
+![](figures/Gifs/interpol_284.gif)  
+__Interpolation 2D UNet vs. ISAS (Input: 5 CT slices)__  
+![](figures/Gifs/isas_unet_compl.gif)  
