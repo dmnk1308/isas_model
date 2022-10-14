@@ -12,8 +12,8 @@ All Models
 
 ## Reconstructions
 Non-ARDS
-![](figures/interpol6.gif)
+![](figures/Gifs/interpol6.gif)
 ARDS
-![](figures/interpol284.gif)
+![](figures/Gifs/interpol284.gif)
 Interpolation 2D UNet vs. ISAS (Input: 5 CT slices)
-![](figures/isas_unet_compl.gif)
+![](figures/Gifs/isas_unet_compl.gif)
