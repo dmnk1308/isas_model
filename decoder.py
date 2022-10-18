@@ -2,7 +2,7 @@
 import sys
 import os
 
-from models2 import *
+from models import *
 from helpers import *
 from render import *
 from training import *
@@ -17,13 +17,13 @@ use_cuda = False if not use_cuda else torch.cuda.is_available()
 device = torch.device('cuda:0' if use_cuda else 'cpu')
 torch.cuda.get_device_name(device) if use_cuda else 'cpu'
 print('Using device', device)
-device = "cpu"
+#device = "cpu"
 
 #####################################################
 # set seed
 torch.manual_seed(123)
 np.random.seed(123)
-model_name = "decoder_point512" 
+model_name = "decoder_only" 
 
 params = {
 # set sizes
@@ -83,15 +83,14 @@ model.to(device)
 # training
 model, acc, iou_, dice, iou_val = train(model = model, wandb = wandb, device = device, **params)
 
-
 ########################################## TEST #####################################################
 # load model
 model.load_state_dict(torch.load("model_checkpoints/final_models/" + params["model_name"] +".pt", map_location = device))
 print("Model loaded.")
 model.eval()
 
-#lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
-lungs = [6,284]
+lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
+#lungs = [6,284]
 
 # load lungs to visualize
 _, img_list, mask_list = load_data(lungs, 

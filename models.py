@@ -55,7 +55,7 @@ class Self_attention_block(torch.nn.Module):
         if self.pos_enc == True:
             # positional encoding
             slice_pe = slice_index.unsqueeze(1)
-            slice_pe = 2*(slice_pe/slice_max) - 1
+            slice_pe = 2*(slice_pe/(slice_max)) - 1
             num_enc = z_enc_tmp.shape[1]
 
             slice_pe = positional_encoding(slice_pe.to(z_enc.device), int(num_enc/2), include_input = False, pe_freq = self.pe_freq)
@@ -122,7 +122,7 @@ class Attention_block(torch.nn.Module):
         if self.pos_encoding == True:
             # positional encoding
             slice_pe = slice_index.unsqueeze(1)
-            slice_pe = 2*(slice_pe/slice_max) - 1
+            slice_pe = 2*(slice_pe/(slice_max)) - 1
             num_enc = z_in.shape[1]
 
             slice_pe = positional_encoding(slice_pe.to(z_in.device), int(num_enc/2), include_input = False, pe_freq = self.pe_freq)
@@ -311,10 +311,13 @@ class Encoder(torch.nn.Module):
                 z_xy = torch.einsum("ij, jklm->iklm", slice_weights, feat_vol)
 
                 # interpolate grid points from z
-                z_xy = grid_sample(z_xy, grid, mode = "bilinear", align_corners = False).squeeze()
+                z_xy = grid_sample(z_xy, grid, mode = "bilinear", align_corners = False).squeeze()      # align_corners = False: extreme values (-1,1) refering to the corner points of input pixel
                 z_xy_list.append(z_xy)
 
-            z_xy = torch.cat(z_xy_list, dim = 1)
+            try:
+                z_xy = torch.cat(z_xy_list, dim = 1)
+            except:
+                z_xy = torch.cat(z_xy_list, dim = 0).unsqueeze(0)
             z_xy = self.reduce_xy(z_xy)
 
             z_xy = F.relu(z_xy)
@@ -368,17 +371,18 @@ class Decoder(torch.nn.Module):
         self.layer = torch.nn.ModuleList()
         self.layer_norm = torch.nn.ModuleList()
 
-        # define first layer 
+        if spatial_feat == True:
+            num_feat_out_total = num_feat_out + num_feat_out_xy
+        else:
+            num_feat_out_total = num_feat_out
+
+        # define first layer  
         if pos_encoding == True:
-            if spatial_feat == True:
-                num_feat_out_total = num_feat_out + num_feat_out_xy
-            else:
-                num_feat_out_total = num_feat_out
             self.layer.append(torch.nn.Linear(pos_dim + num_feat_out_total,num_nodes_first))
             self.layer_norm.append(torch.nn.LayerNorm(num_nodes_first))
         
         else:
-            self.layer.append(torch.nn.Linear(3+pos_dim,num_nodes_first))
+            self.layer.append(torch.nn.Linear(3+num_feat_out_total,num_nodes_first))
             self.layer_norm.append(torch.nn.LayerNorm(num_nodes_first))
             
         # define additional layer      
@@ -408,8 +412,9 @@ class Decoder(torch.nn.Module):
         if self.pos_enc == True:
             x_pe = positional_encoding(x_in, num_encoding_functions = self.num_encoding_functions, include_input=False, pe_freq = self.pe_freq)
             x_pe = x_pe.reshape(x_pe.shape[0], -1)
-
-        x = torch.cat((x_pe, z_in), dim = 1)          
+            x = torch.cat((x_pe, z_in), dim = 1)          
+        else:
+            x = torch.cat((x_in, z_in), dim = 1)         
 
         # first layer
         x = self.layer[0](x)
@@ -547,6 +552,70 @@ class ISAS(torch.nn.Module):
         return x
 
 
+class ISAS_enc_only(torch.nn.Module):
+    def __init__(self, num_layer = 5, 
+                 num_nodes = 512, 
+                 num_nodes_first = 128, 
+                 pos_encoding = True, 
+                 num_feat_attention = 64,
+                 num_feat = 64,
+                 num_feat_out = 64,
+                 num_encoding_functions = 6,
+                 num_blocks = 5,
+                 skips = False,
+                 dropout = 0.,
+                 spatial_feat = True,
+                 global_feat = False,
+                 img_resolution = 128,
+                 num_feat_out_xy = 16,
+                 layer_norm = False,
+                 batch_norm = False,
+                 pe_freq = "2pi",
+                 get_weights = False,
+                 **_):
+
+        super(ISAS_enc_only, self).__init__()
+        
+        # Preprocessing - Standardization with mean and standard deviation
+        self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
+        self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
+        self.get_weights = get_weights
+
+        self.enc_global = Encoder(num_feat = num_feat, 
+                 num_feat_out = num_feat_out, 
+                 num_feat_attention = num_feat_attention,
+                 num_blocks = num_blocks,
+                 num_feat_out_xy = num_feat_out_xy,
+                 global_feat = global_feat,
+                 spatial_feat= spatial_feat,
+                 dropout = dropout,
+                 image_resolution= img_resolution,
+                 layer_norm = layer_norm,
+                 batch_norm = batch_norm,
+                 pe_freq = pe_freq,
+                 get_weights = get_weights)
+
+        self.fc = torch.nn.Linear(num_feat_out + num_feat_out_xy, 1)
+
+
+    def forward(self, data, slice_max = None, slice_index = None):
+        x_in, z_in, _ = data
+
+        # Encoder
+        if self.get_weights == True:
+            # extract attention weights
+            z_out, slice_weights = self.enc_global([x_in,z_in], slice_index = slice_index, slice_max = slice_max)
+        else:
+            z_out = self.enc_global([x_in,z_in], slice_index = slice_index, slice_max = slice_max)
+           
+        # Decoder
+        x = self.fc(z_out)
+
+        if self.get_weights == True:
+            return x, slice_weights
+
+        return x
+
 ################################################################
 ########################### UNET ##############################
 ################################################################
@@ -642,6 +711,18 @@ class Decoder_unet(torch.nn.Module):
                 x_tmp = block([x[-(i+1)], x[-(i+2)]])
                 x[-(i+2)] = x_tmp
             return x[0]
+
+class FeatExt(torch.nn.Module):
+    def __init__(self, feat = 32, num_blocks = 5):
+        super(FeatExt, self).__init__() 
+        self.enc = Encoder_unet(feat = feat, num_enc_blocks = num_blocks)
+        self.dec = Decoder_unet(feat = feat*(2**(num_blocks-1)), last_relu=False)
+       
+    def forward(self,x):
+        x = self.enc(x)
+        x = self.dec(x)
+
+        return x
 
 class UNet(torch.nn.Module):
     def __init__(self, feat = 32, num_blocks = 5, **_):

@@ -1,4 +1,4 @@
-from models2 import *
+from models import *
 from helpers import *
 from render import *
 from training import *
@@ -12,12 +12,12 @@ import seaborn as sns
 
 use_cuda = True
 use_cuda = False if not use_cuda else torch.cuda.is_available()
-device = torch.device('cuda:1' if use_cuda else 'cpu')
+device = torch.device('cuda:0' if use_cuda else 'cpu')
 torch.cuda.get_device_name(device) if use_cuda else 'cpu'
 print('Using device', device)
-device = "cpu"
+#device = "cpu"
 #####################################################
-model_name = "full_100k_unbalanced" 
+model_name = "150k_border_unbalanced" 
 
 params = {
 # set sizes

@@ -18,7 +18,8 @@ def convert_sdf_samples_to_ply(
     ply_filename_out,
     offset=None,
     scale=None,
-    from_mask = False
+    from_mask = False,
+    level = 0.
 ):
     """
     Convert sdf samples to .ply
@@ -36,11 +37,11 @@ def convert_sdf_samples_to_ply(
     verts, faces, normals, values = np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0)
     if from_mask == True:
         verts, faces, normals, values = skimage.measure.marching_cubes(
-            numpy_3d_sdf_tensor, level=0.0, spacing=voxel_size
+            numpy_3d_sdf_tensor, level=level, spacing=voxel_size
         )
     else:
         verts, faces, normals, values = skimage.measure.marching_cubes(
-            numpy_3d_sdf_tensor, level=0.0, spacing= voxel_size
+            numpy_3d_sdf_tensor, level=level, spacing= voxel_size
         )
 
 
@@ -88,7 +89,7 @@ def convert_sdf_samples_to_ply(
     )
 
 def get_ply(model = None, mask = None, from_mask = False, ply_filename = "tmp", 
-            resolution = 128, z_resolution = None, device = None, max_batch=64 ** 3, lung = None, features = None, slicewise = False, slices = None):
+            resolution = 128, z_resolution = None, device = None, max_batch=64 ** 3, lung = None, features = None, slicewise = False, slices = None, level = 0.):
     offset=None
     scale=None
     ply_filename = "/home/dbecker/masterlung/visualization/ply_data/"+ply_filename+".ply"    
@@ -114,7 +115,8 @@ def get_ply(model = None, mask = None, from_mask = False, ply_filename = "tmp",
                                     voxel_grid_origin = [-1, -1, -1],
                                     voxel_size = [2.0 / (mask.shape[0]-1), 2.0 / (mask.shape[1]-1), 2.0 / (mask.shape[2]-1)],
                                     ply_filename_out = ply_filename, 
-                                    from_mask = True)
+                                    from_mask = True,
+                                    level = level)
         print("Done.")
         return None
 
