@@ -7,7 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
 from helpers import *
-from models2 import *
+from models import *
 from render import *
 import wandb
 
@@ -41,21 +41,20 @@ def training_step_unet(model, dl, optimizer, device = None):
     
 def validation_unet(model, images_val, masks_val, device = None):
     model.eval()
-    y_hat_list = []
-    t_list = []
+    iou_list = []
+    dice_list = []
+    acc_list = []
 
     for image, mask in zip(images_val, masks_val):
-        #image = image.moveaxis(1,2)
         y_hat = model(image.float().to(device).unsqueeze(0).unsqueeze(0))
-        y_hat = torch.sigmoid(y_hat.detach().cpu()).squeeze()
-        y_hat_list.append(y_hat.flatten())
-        t_list.append(mask.flatten())
+        y_hat = torch.round(torch.sigmoid(y_hat.detach().cpu()).squeeze())
+        iou_list.append(iou(y_hat,mask).numpy())
+        dice_list.append(dice_coef(y_hat,mask).numpy())
+        acc_list.append((torch.sum(y_hat.flatten() == mask.flatten())/len(mask.flatten())).numpy())
 
-    y_hat = torch.round(torch.concat(y_hat_list))
-    t = torch.concat(t_list)
-    acc_val = torch.sum(y_hat == t)/len(t)        
-    iou_val = iou(y_hat, t)
-    dice_val = dice_coef(y_hat, t)    
+    acc_val = np.mean(np.array(acc_list))
+    iou_val = np.mean(np.array(iou_list))
+    dice_val = np.mean(np.array(dice_list))
 
     return acc_val, iou_val, dice_val
 
@@ -88,9 +87,9 @@ def training_unet(model, wandb, images, masks, optimizer, epochs, feat = 32, num
             print("Dice: ", np.round(dice_epoch.numpy(),5)) 
             print("Loss: ", np.round(loss_epoch,5))  
             print("\n## Validation ##")
-            print("Accuracy: ", np.round(acc_val.numpy(), 5))
-            print("IoU Validation: ", np.round(iou_val.numpy(),5))
-            print("Dice Validation: ", np.round(dice_val.numpy(),5))
+            print("Accuracy: ", np.round(acc_val, 5))
+            print("IoU Validation: ", np.round(iou_val,5))
+            print("Dice Validation: ", np.round(dice_val,5))
             #print("Loss Validation: ", np.round(loss_val,5)) 
         
         scheduler.step(loss_epoch)
@@ -116,7 +115,7 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
     unet = UNet_3D(feat = feat, num_blocks = num_blocks)
     unet.to(device)
     unet.train()
-    path = "model_checkpoints/final_models/unet3d.pt"
+    path = "model_checkpoints/final_models/unet3d_new.pt"
 
     # list with all lungs
     train_lungs = [i for i in range(num_lungs)]
@@ -142,8 +141,7 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
         img_resolution = resolution, 
         return_mask = True, 
         augmentations = augmentations,
-        unet = True,
-        unet3D= True)
+        unet = True)
 
     _, images_val, masks_val = load_data(val_lungs, 
         train = True, 
@@ -151,8 +149,7 @@ def unet_no_decoder(wandb, num_lungs, val_lungs = [], test_lungs = [], feat = 32
         img_resolution = resolution, 
         return_mask = True, 
         augmentations = False,
-        unet = True, 
-        unet3D = True)        
+        unet = True)        
 
     # compute mean and standard deviation of images
     unet.img_mean = nn.parameter.Parameter(torch.mean(torch.cat(images_train)), requires_grad = False)  
@@ -216,25 +213,23 @@ if __name__ == "__main__":
     }
 
     # Train model
-    # wandb.init(project = "unet3D", config = params, name = "unet")
-    # unet_no_decoder(device = device, wandb = wandb, **params)
+    wandb.init(project = "unet3D", config = params, name = "unet")
+    #unet_no_decoder(device = device, wandb = wandb, **params)
 
     # Create PLY files
     unet = UNet_3D(**params)
     unet.load_state_dict(torch.load("model_checkpoints/final_models/unet3d.pt", map_location = device))
-    #device = "cpu"
     unet.to(device)
     unet.eval()
 
-    val_lungs = [86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
-
+    #val_lungs = [86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
+    val_lungs = [6, 284]
     _, images_val, masks_val = load_data(val_lungs, 
         train = True, 
         point_resolution = 128, 
         img_resolution = 128, 
         return_mask = True, 
-        augmentations = False,
-        unet3D = True) 
+        augmentations = False) 
 
     images_val = [((img.to(device)-unet.img_mean)/unet.img_std).cpu() for img in images_val] 
 
@@ -243,7 +238,12 @@ if __name__ == "__main__":
     acc_list = []
 
     for i, img, mask in zip(val_lungs, images_val, masks_val):
+        #img = torch.from_numpy(resize(img, 16))
         y_hat = unet(img.float().to(device).unsqueeze(0).unsqueeze(0)).squeeze().detach().cpu()
+        
+        ## RESIZE FOR OUTPUT INTERPOLATION ##
+        #y_hat = torch.from_numpy(resize(y_hat, 48))
+        
         y_hat_tmp = torch.round(torch.sigmoid(y_hat)).flatten()
         mask_tmp = mask.flatten()
         acc = np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy())
@@ -254,15 +254,15 @@ if __name__ == "__main__":
         dice_value = dice_coef(y_hat_tmp, mask_tmp).numpy()
         dice_list.append(dice_value)
         print(dice_value)
-        # get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
+        #get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
         #wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
 
         pred = torch.round(torch.sigmoid(y_hat)).numpy()
 
-        # for j, slice in enumerate(pred):
-        #     plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_3DUNet.png", slice, cmap = "gray")
-        # for j, slice in enumerate(mask.numpy()):
-        #     plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
+        for j, slice in enumerate(pred):
+            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_3DUNet.png", slice, cmap = "gray")
+        for j, slice in enumerate(mask.numpy()):
+            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
 
     iou_test = np.mean(np.array(iou_list))
     dice_test = np.mean(np.array(dice_list))

@@ -6,7 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
 from helpers import *
-from models2 import *
+from models import *
 from render import *
 import wandb
 
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     device = torch.device('cuda:1' if use_cuda else 'cpu')
     torch.cuda.get_device_name(device) if use_cuda else 'cpu'
     print('Using device', device)
-    #device = "cpu"
+    device = "cpu"
     params = {
         "num_lungs" : 332,
         "val_lungs" : [0, 1, 2, 3, 4, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331],
@@ -225,19 +225,20 @@ if __name__ == "__main__":
     unet.to(device)
     unet.eval()
 
-    val_lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
-    #val_lungs = [6, 284]
-    # _, images_val, masks_val = load_data(val_lungs, 
-    #     train = True, 
-    #     point_resolution = 128, 
-    #     img_resolution = 512, 
-    #     return_mask = True, 
-    #     augmentations = False,
-    #     unet = True)   
+    #val_lungs = [5, 6, 7, 8, 9, 86, 87, 88, 178, 179, 180, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304]
+    val_lungs = [6, 284]
+    _, images_val, masks_val = load_data(val_lungs, 
+        train = True, 
+        point_resolution = 128, 
+        img_resolution = 512, 
+        return_mask = True, 
+        augmentations = False,
+        unet = True)   
 
-    # for img, i in zip(images_val, val_lungs):
-    #     for j, slice in enumerate(img.numpy()):
-    #         plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
+    for img, i in zip(images_val, val_lungs):
+        for j, slice in enumerate(img.numpy()):
+            #plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
+            plt.imsave("exp_interpol/lung_"+str(i)+"_"+str(j)+"_img.png", slice, cmap = "gray")
     
     _, images_val, masks_val = load_data(val_lungs, 
         train = True, 
@@ -254,7 +255,13 @@ if __name__ == "__main__":
     acc_list = []
 
     for i, img, mask in zip(val_lungs, images_val, masks_val):
+        img = torch.from_numpy(resize(img, 5))
+        mask = torch.from_numpy(resize(mask, 48))
         y_hat = unet(img.float().to(device).unsqueeze(1)).squeeze().detach().cpu()
+        
+        ## RESIZE FOR OUTPUT INTERPOLATION ##
+        y_hat = torch.from_numpy(resize(y_hat, 48))
+        
         y_hat_tmp = torch.round(torch.sigmoid(y_hat)).flatten()
         mask_tmp = mask.flatten()
         acc = np.sum(y_hat_tmp.numpy() == mask_tmp.numpy())/len(mask_tmp.numpy())
@@ -268,13 +275,14 @@ if __name__ == "__main__":
         get_ply(mask=y_hat.numpy(),  ply_filename = "dump/unet_lung_"+str(i), from_mask = True, resolution = 128, device = device)
         #wandb.save("visualization/ply_data/dump/unet_lung_"+str(i)+".ply", base_path = "visualization/ply_data")
 
-        pred = torch.round(torch.sigmoid(y_hat)).numpy()
-
+        pred = torch.sigmoid(y_hat).numpy()
+        pred = np.round(pred)
+        
         for j, slice in enumerate(pred):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_UNet.png", slice, cmap = "gray")
+            plt.imsave("exp_interpol/lung_"+str(i)+"_"+str(j)+"_2DUNet.png", slice, cmap = "gray")
         for j, slice in enumerate(mask.numpy()):
-            plt.imsave("mask_comp/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
-
+            plt.imsave("exp_interpol/lung_"+str(i)+"_"+str(j)+"_mask.png", slice, cmap = "gray")
+        
     iou_test = np.mean(np.array(iou_list))
     dice_test = np.mean(np.array(dice_list))
     acc_test = np.mean(np.array(acc_list))
@@ -288,5 +296,5 @@ if __name__ == "__main__":
         "Dice" : dice_list,
         "IoU" : iou_list})
     
-    results.to_csv("results/TEST_2DUNET_metrics.csv")
-    wandb.save("results/UNet_val_metrics.csv")
+    #results.to_csv("results/TEST_2DUNET_metrics.csv")
+    #wandb.save("results/UNet_val_metrics.csv")

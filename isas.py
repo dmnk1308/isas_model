@@ -2,19 +2,20 @@
 import sys
 import os
 
-from models2 import *
+from models import *
 from helpers import *
 from render import *
 from training import *
  
 # load modules
+import random
 import numpy as np
 import torch
 import wandb
 
 use_cuda = True
 use_cuda = False if not use_cuda else torch.cuda.is_available()
-device = torch.device('cuda:0' if use_cuda else 'cpu')
+device = torch.device('cuda:1' if use_cuda else 'cpu')
 torch.cuda.get_device_name(device) if use_cuda else 'cpu'
 print('Using device', device)
 
@@ -22,19 +23,23 @@ print('Using device', device)
 # set seed
 torch.manual_seed(123)
 np.random.seed(123)
+random.seed(123)
 
 # name model run
-model_name = "full_50k_border_unb"
+model_name = "150k_random"
 
 # set model parameters
 params = {
 # set sizes
-"batch_size": 500,
+"batch_size": 1500,
 "batch_size_val": 1400,
-"sample_size" : 50000,
+"sample_size" : 150000,
+"random" : True,
+"unbalanced" : False,
+"border" : False,
 
 # model parameters
-"epochs" : 5,
+"epochs" : 4,
 "lr" : 0.00005,
 "num_nodes" : 512,
 "num_nodes_first" : 512,

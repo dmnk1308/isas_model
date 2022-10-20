@@ -15,15 +15,17 @@ import torchvision.transforms.functional as TF
 
 def load_data(lungs, 
     train = True, 
-    point_resolution = 64, 
+    point_resolution = 128, 
     img_resolution = 128, 
     batch_size = 250, 
     sample_size = 25000,
     return_mask = False, 
     augmentations = False,
     unet = False,
-    unet3D = False,
-    proportion = 1.0):
+    proportion = 0.5,
+    random = False,
+    unbalanced = False,
+    border = True):
 
     point_resolution = int(512/point_resolution)
     img_resolution = int(512/img_resolution)
@@ -40,27 +42,23 @@ def load_data(lungs,
 
     for i in tqdm(lungs):
         mask_raw = nib.load("data/nifti/mask/case_"+str(i)+".nii.gz").get_fdata()
-        #if unet3D == True:
         mask_raw = resize(mask_raw, 48)
-        # elif mask_raw.shape[0] > 50:
-        #     mask_raw = resize(mask_raw, 50)
+
         # mask to sample points
         mask_sample = mask_raw[:,::point_resolution,::point_resolution]        
         # mask for targets
         mask_target = torch.from_numpy(np.where(mask_raw < 100,  0, 1))[:,::point_resolution,::point_resolution]
 
         img = nib.load("data/nifti/image/case_"+str(i)+".nii.gz").get_fdata()
-        #if unet3D == True:
         img = resize(img, 48)
-        #elif img.shape[0] > 50:
-         #   img = resize(img, 50)
+        
         img = torch.from_numpy(img)
         img_no_aug = img[:,::img_resolution,::img_resolution]
   
         # make dataloader for unaugmented data
         if unet == False:
             if train == True:
-                sample_mask = voxel_sample(mask_sample, flatten = False, n_samples = sample_size, verbose = True, proportion = proportion)
+                sample_mask = voxel_sample(mask_sample, flatten = False, n_samples = sample_size, verbose = True, proportion = proportion, unbalanced = unbalanced, random = random, border = border)
                 data = Lung_dataset(mask_target, sample_mask)
                 dl = DataLoader(data, batch_size = batch_size, shuffle = True)
             else:
@@ -90,7 +88,7 @@ def load_data(lungs,
                 mask_pad = mask_pad.numpy()
                 mask_pad_bi = torch.from_numpy(np.where(mask_pad < 100,  0, 1))
                 if unet == False:
-                    sample_mask = voxel_sample(mask_pad, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion)
+                    sample_mask = voxel_sample(mask_pad, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion, unbalanced = unbalanced, random = random, border = border)
                     data = Lung_dataset(mask_pad_bi, sample_mask)
                     dl = DataLoader(data, batch_size = batch_size, shuffle = True)
                     dl_list.append(dl)
@@ -106,7 +104,7 @@ def load_data(lungs,
                 mask_pad = mask_pad.numpy()
                 mask_pad_bi = torch.from_numpy(np.where(mask_pad < 100,  0, 1))
                 if unet == False:
-                    sample_mask = voxel_sample(mask_pad, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion)
+                    sample_mask = voxel_sample(mask_pad, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion, unbalanced = unbalanced, random = random, border = border)
                     data = Lung_dataset(mask_pad_bi, sample_mask)
                     dl = DataLoader(data, batch_size = batch_size, shuffle = True)
                     dl_list.append(dl)
@@ -121,7 +119,7 @@ def load_data(lungs,
                 mask_crop = mask_crop.numpy()
                 mask_crop_bi = torch.from_numpy(np.where(mask_crop < 100,  0, 1))
                 if unet == False:
-                    sample_mask = voxel_sample(mask_crop, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion)
+                    sample_mask = voxel_sample(mask_crop, flatten = False, n_samples = sample_size, verbose =False, proportion = proportion, unbalanced = unbalanced, random = random, border = border)
                     data = Lung_dataset(mask_crop_bi, sample_mask)
                     dl = DataLoader(data, batch_size = batch_size, shuffle = True)
                     dl_list.append(dl)
@@ -205,14 +203,15 @@ def pad_fix(image, segmentation):
     return image, segmentation
 
 
-def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, unbalanced = False, return_mask = False, max_size = True, proportion_sampling = True, proportion = 0.5, verbose = True, train = True):   
+def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, unbalanced = False, return_mask = False, max_size = True, border = True, proportion = 0.5, verbose = True, train = True):   
     mask_in = np.moveaxis(mask_in,0,-1)
 
     if train == False:
         final_mask = np.full(mask_in.shape, True)
         return final_mask
     
-    if random == True:
+    if (random == True) and (border == False):
+        print("random no border")
         final_mask = np.full(mask_in.shape, False)
         
         samples_occ = np.where(mask_in >= 100,1,0)
@@ -230,7 +229,9 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         final_mask[samples_unocc[0], samples_unocc[1], samples_unocc[2]] = True
         return final_mask
     
-    if unbalanced == True:
+    if (unbalanced == True) and (border == False):
+        print("unbalanced no border")
+
         final_mask = np.full(mask_in.shape, False)
         
         samples = np.where(mask_in >= 0,1,0)
@@ -240,96 +241,95 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
 
         return final_mask
 
-
+    ########## BORDER SAMPLING #########################
     # make voxel for surface and normal points
     mask_surface = mask_in.copy()
     mask_in = np.where(mask_in >= 100, 1, 0)
-    if proportion_sampling == True:
-        
-        # how many surface points in total
-        n_surface = int(proportion*n_samples)
 
-        # potential differences
-        occ_diff = 0
-        unocc_diff = 0
+    # how many surface points in total
+    n_surface = int(proportion*n_samples)
 
-        # surface occupied
-        surface_occ = ((mask_surface<255) * (mask_surface>=100))
-        surface_occ = np.stack(np.where(surface_occ),1)
-        n_surface_occ = int(n_surface/2)
-        if n_surface_occ > surface_occ.shape[0]:
-            #print("Not enough surface points to sample from.")
-            occ_diff = n_surface_occ - surface_occ.shape[0]
-            n_surface_occ -= occ_diff
-            n_samples -= n_surface_occ
-        surface_occ = surface_occ[np.random.choice(np.arange(surface_occ.shape[0]), n_surface_occ, replace = False)].T
+    # potential differences
+    occ_diff = 0
+    unocc_diff = 0
 
-        # surface not occupied
-        surface_unocc = ((mask_surface<100) * (mask_surface>0))
-        surface_unocc = np.stack(np.where(surface_unocc),1)
-        n_surface_unocc = int(n_surface/2)
+    # surface occupied
+    surface_occ = ((mask_surface<255) * (mask_surface>=100))
+    surface_occ = np.stack(np.where(surface_occ),1)
+    n_surface_occ = int(n_surface/2)
+    if n_surface_occ > surface_occ.shape[0]:
+        #print("Not enough surface points to sample from.")
+        occ_diff = n_surface_occ - surface_occ.shape[0]
+        n_surface_occ -= occ_diff
+        n_samples -= n_surface_occ
+    surface_occ = surface_occ[np.random.choice(np.arange(surface_occ.shape[0]), n_surface_occ, replace = False)].T
 
-        if n_surface_unocc > surface_unocc.shape[0]:
-            unocc_diff = n_surface_unocc - surface_unocc.shape[0]
-            n_surface_unocc -= unocc_diff
-            n_samples -= n_surface_unocc
-        surface_unocc = surface_unocc[np.random.choice(np.arange(surface_unocc.shape[0]), n_surface_unocc, replace = False)].T
+    # surface not occupied
+    surface_unocc = ((mask_surface<100) * (mask_surface>0))
+    surface_unocc = np.stack(np.where(surface_unocc),1)
+    n_surface_unocc = int(n_surface/2)
 
-        final_mask = np.full(mask_surface.shape, False)
-        final_mask[surface_occ[0], surface_occ[1], surface_occ[2]] = True
-        final_mask[surface_unocc[0], surface_unocc[1], surface_unocc[2]] = True
+    if n_surface_unocc > surface_unocc.shape[0]:
+        unocc_diff = n_surface_unocc - surface_unocc.shape[0]
+        n_surface_unocc -= unocc_diff
+        n_samples -= n_surface_unocc
+    surface_unocc = surface_unocc[np.random.choice(np.arange(surface_unocc.shape[0]), n_surface_unocc, replace = False)].T
 
-    # make filter mask for only surface points
-    else:
-        final_mask = ((mask_surface<255) * (mask_surface>0))
-        n_surface = np.sum(final_mask)
+    final_mask = np.full(mask_surface.shape, False)
+    final_mask[surface_occ[0], surface_occ[1], surface_occ[2]] = True
+    final_mask[surface_unocc[0], surface_unocc[1], surface_unocc[2]] = True
 
     # invert surface filter mask to sample from other points
     sample_mask = np.invert(final_mask)
+    ########################################################################
 
-    # #### RANDOM SAMPLE OTHER POINTS
-    occ = np.stack(np.where(sample_mask),1)
-    filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples, replace = False)].T
-    final_mask[filter[0], filter[1], filter[2]] = True
-    # ########################################################################
+    #### RANDOM SAMPLE OTHER POINTS
+    if unbalanced == True:
+        print(".")
+        occ = np.stack(np.where(sample_mask),1)
+        filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples, replace = False)].T
+        final_mask[filter[0], filter[1], filter[2]] = True
+    #######################################################################
 
-    ################################################################
-    # # define number of points to sample
-    # n_samples_occ = int((n_samples-n_surface)/2) + occ_diff
-    # n_samples_unocc = int((n_samples-n_surface)/2) + unocc_diff
 
-    # # occupied points
-    # sample_mask_occ = sample_mask * (mask_in == 1)
-    # occ = np.stack(np.where(sample_mask_occ),1)
-    # if n_samples_occ <= occ.shape[0]:
-    #     filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
-    #     final_mask[filter[0], filter[1], filter[2]] = True
+    #### BALANCED SAMPLE OTHER POINTS
+    else:
+        print("balanced border")
+        # define number of points to sample
+        n_samples_occ = int((n_samples-n_surface)/2) + occ_diff
+        n_samples_unocc = int((n_samples-n_surface)/2) + unocc_diff
 
-    # else:
-    #     diff = n_samples_occ - occ.shape[0]
-    #     if max_size == True:
-    #         n_samples_occ -= diff
-    #         n_samples_unocc -= diff
-    #         if verbose:
-    #             print("Sample Inbalance - Reduced Sample Size to " + str(n_samples - (2*diff)) + ".")
-    #     else:
-    #         n_samples_unocc += diff
-    #         n_samples_occ -= diff
-    #         if verbose:
-    #             print("Sample Inbalance.")
-    #     filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
-    #     final_mask[filter[0], filter[1], filter[2]] = True
+        # occupied points
+        sample_mask_occ = sample_mask * (mask_in == 1)
+        occ = np.stack(np.where(sample_mask_occ),1)
+        if n_samples_occ <= occ.shape[0]:
+            filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
+            final_mask[filter[0], filter[1], filter[2]] = True
 
-    # # unoccupied points
-    # sample_mask_unocc = sample_mask * (mask_in == 0)
-    # unocc = np.stack(np.where(sample_mask_unocc),1)
-    # if n_samples_unocc <= unocc.shape[0]:
-    #     filter = unocc[np.random.choice(np.arange(unocc.shape[0]), n_samples_unocc, replace = False)].T
-    #     final_mask[filter[0], filter[1], filter[2]] = True
-    # else:
-    #     print("Sample Inbalance - Unoccupied Points.")
-    ################################################################
+        else:
+            diff = n_samples_occ - occ.shape[0]
+            if max_size == True:
+                n_samples_occ -= diff
+                n_samples_unocc -= diff
+                if verbose:
+                    print("Sample Inbalance - Reduced Sample Size to " + str(n_samples - (2*diff)) + ".")
+            else:
+                n_samples_unocc += diff
+                n_samples_occ -= diff
+                if verbose:
+                    print("Sample Inbalance.")
+            filter = occ[np.random.choice(np.arange(occ.shape[0]), n_samples_occ, replace = False)].T
+            final_mask[filter[0], filter[1], filter[2]] = True
 
+        # unoccupied points
+        sample_mask_unocc = sample_mask * (mask_in == 0)
+        unocc = np.stack(np.where(sample_mask_unocc),1)
+        if n_samples_unocc <= unocc.shape[0]:
+            filter = unocc[np.random.choice(np.arange(unocc.shape[0]), n_samples_unocc, replace = False)].T
+            final_mask[filter[0], filter[1], filter[2]] = True
+        else:
+            print("Sample Inbalance - Unoccupied Points.")
+        ###############################################################
 
     if flatten == False:
         return final_mask
@@ -533,16 +533,32 @@ class Lung_dataset(Dataset):
 
         if self.training == True:
             # add random noise
-            # Example: img_res 64:
-                    # Abstand zwischen Punkten: 2 * (1/64) = 1/32
-                    # Sample zwischen 0 und 1; ziehe 0.5 ab und teile durch 32
-            X[1:] = X[1:]+((np.random.random_sample(X[1:].shape)-0.5)/(self.resolution/2))
-            X[0] = X[0]+((np.random.random_sample(X[0].shape)-0.5)/(self.z_resolution/2))
+            # use 99.995 Quantile of standard normal = 3.890592
+            noise = np.random.normal(loc = 0, scale = (1/self.resolution)/3.890592, size = 1)
+            if noise > (1/self.resolution):
+                noise = 1/self.resolution
+            if noise < -(1/self.resolution):
+                noise = -1/self.resolution               
+            X[1] = X[1]+noise
+            
+            noise = np.random.normal(loc = 0, scale = (1/self.resolution)/3.890592, size = 1)
+            if noise > (1/self.resolution):
+                noise = 1/self.resolution
+            if noise < -(1/self.resolution):
+                noise = -1/self.resolution               
+            X[2] = X[2]+noise
+            
+            noise = np.random.normal(loc = 0, scale = (1/self.z_resolution)/3.890592, size = 1)
+            if noise > (1/self.z_resolution):
+                noise = 1/self.z_resolution
+            if noise < -(1/self.z_resolution):
+                noise = -1/self.z_resolution               
+            X[0] = X[0]+noise
+            
             # correct at boundaries
             X[X < -1] = -1
             X[X > 1] = 1 
         sample_idx = self.filter_mask[idx]
-        
         sample = [X, sample_idx, y, self.weights]
 
         if self.transform:
