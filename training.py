@@ -20,20 +20,22 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
     dice_epoch = []
     acc_epoch = []
     
+    # make list 
     lungs = np.arange(len(dl_list))         
     aug_multi = int(len(lungs)/len(train_lungs))
-    train_lungs = aug_multi*train_lungs
+    train_lungs = np.array(aug_multi*train_lungs)
     
-    # create vector with lung ids
-    iterator = [iter(dl) for dl in dl_list]         # create an iterator for each lung dataloader (shuffles coordinates randomly)
+    # create iterator for each lung which shuffles coordinates randomly
+    iterator = [iter(dl) for dl in dl_list]        
     
     # training iterations 
-    for global_count in tqdm(range(int(sample_size/batch_size)), disable = not verbose):   # compute number of iterations in 1 epoch (sample_size/batch_size)
-        np.random.shuffle(lungs)                        # shuffle lung ids randomly
-        lungs_tmp = lungs
-
+    for global_count in tqdm(range(int(sample_size/batch_size)), disable = not verbose):    # compute number of point iterations in 1 epoch (sample_size/batch_size) for each lung 
+        np.random.shuffle(lungs)                                                            # shuffle lungs randomly
+        lungs_tmp = lungs                                                                   # make temporary array for the CT iteration step
+        train_lungs_tmp = train_lungs[lungs_tmp]
+        
         # devide lung batches
-        for lung_iter in range(int(np.ceil(len(lungs)/lungs_per_batch))):
+        for lung_iter in range(int(np.ceil(len(lungs)/lungs_per_batch))):                   # computer number of CT iteration steps per point iteration
 
             if len(lungs_tmp) == 0:     # if no lungs are left skip the loop
                 continue
@@ -42,9 +44,10 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
             t_list = []
             counter = 0
 
-            while counter <= lungs_per_batch and len(lungs_tmp) > 0:                                 # for each "random" lung train model
+            while counter <= lungs_per_batch and len(lungs_tmp) > 0:                        # for each "random" lung train model
                 
                 i = lungs_tmp[0]
+                l = train_lungs_tmp[0]
 
                 img = img_list[i]
                 slices_max = img.shape[0]
@@ -52,7 +55,6 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 # randomly leave out slices
                 # 1. decide whether to leave slices out or not
                 leave_out = random.randint(0,1)
-                #´leave_out = 1
                 
                 if leave_out == 1:
                     # 2. determine how many slices to provide as input
@@ -67,9 +69,10 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 img = img.unsqueeze(1)
 
                 try:
-                    x, filter_in ,t,_ = next(iterator[i])      # get coordinates from lung iterator
+                    x, filter_in ,t,_ = next(iterator[i])      # get data from lung iterator
                 except:                                        # if no iteration is left, delete lung from lungs_tmp
                     lungs_tmp = lungs_tmp[1:]
+                    train_lungs_tmp = train_lungs_tmp[1:]
                     break
 
                 # predict
@@ -77,7 +80,7 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 t = torch.unsqueeze(t, -1)
 
                 if no_encoder == True:
-                    y_hat = model([x.float().to(device), torch.tensor(i).to(device)])
+                    y_hat = model([x.float().to(device), torch.tensor(l).to(device)])
 
                 else:
                     y_hat = model([x.float().to(device).detach(), img.float().to(device), None], slice_index = slices_input, slice_max = slices_max)
@@ -86,6 +89,8 @@ def training_iter(model, dl_list, optimizer, criterion, device = None, img_list 
                 t_list.append(t)
 
                 lungs_tmp = lungs_tmp[1:]
+                train_lungs_tmp = train_lungs_tmp[1:]
+
                 counter += 1
 
             if len(y_hat_list) == 0:
@@ -256,8 +261,7 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
                 print("Validation on cpu.")
                 model.to("cpu")
                 loss_val, acc_val, iou_val, dice_val = validation(model = model, dl_list = dl_list_val, criterion = criterion, device = "cpu", 
-                    img_list = img_list_val, spatial_feat = spatial_feat, resolution = shape_resolution,
-                    no_encoder = no_encoder, val_lungs = val_lungs)
+                    img_list = img_list_val, no_encoder = no_encoder, val_lungs = val_lungs)
                 model.to(device)
             try:
                 wandb.log({"training_loss": loss_epoch,
@@ -323,7 +327,9 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
                     
     # optimize test features for decoder only model
     if no_encoder == True:
-        epochs = 100
+        ref_val = 0
+        optimizer = torch.optim.Adam(model.parameters(), lr = lr, weight_decay = weight_decay)
+        epochs = 30
         for param in model.dec.parameters():
             param.requires_grad = False
         model.train()
@@ -349,10 +355,11 @@ def train(model, wandb, model_name, num_lungs, lr, epochs, batch_size, patience,
             print("IoU: ", np.round(iou_epoch, 5)) 
             print("Dice: ", np.round(dice_epoch,5)) 
             print("Loss: ", np.round(loss_epoch,5))  
-            torch.save(model.state_dict(), path)
+            if ref_iou < iou_epoch:
+                torch.save(model.state_dict(), path)
+                ref_iou = iou_epoch
     
-    #torch.save(model.state_dict(), path)
-    wandb.save(path,policy = "now")
+    torch.save(model.state_dict(), path)
 
     return model, acc, iou_values, dice, ref_iou
 

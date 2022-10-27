@@ -216,17 +216,24 @@ def voxel_sample(mask_in, flatten = True, n_samples = 1000000, random = False, u
         
         samples_occ = np.where(mask_in >= 100,1,0)
         samples_occ = np.stack(np.where(samples_occ),1) 
-        try:       
+        
+        # control if enough occ points are available
+        if samples_occ.shape[0] >= int(n_samples/2):
             samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), int(n_samples/2), replace = False)].T
-        except:
+            n_samples -= int(n_samples/2)
+        # switch to unbalanced design if not
+        else:
+            n_tmp = samples_occ.shape[0]
             samples_occ = samples_occ[np.random.choice(np.arange(samples_occ.shape[0]), samples_occ.shape[0], replace = False)].T
-            n_samples = int(samples_occ.shape[0]*2)
+            n_samples -= n_tmp
+            
         final_mask[samples_occ[0], samples_occ[1], samples_occ[2]] = True
         
         samples_unocc = np.where(mask_in < 100,1,0)
         samples_unocc = np.stack(np.where(samples_unocc),1)   
-        samples_unocc = samples_unocc[np.random.choice(np.arange(samples_unocc.shape[0]), int(n_samples/2), replace = False)].T
+        samples_unocc = samples_unocc[np.random.choice(np.arange(samples_unocc.shape[0]), n_samples, replace = False)].T
         final_mask[samples_unocc[0], samples_unocc[1], samples_unocc[2]] = True
+        print(np.sum(final_mask))
         return final_mask
     
     if (unbalanced == True) and (border == False):
@@ -516,43 +523,45 @@ class Lung_dataset(Dataset):
         self.coord = np.stack((z,y,x),3)
 
         self.targets = mask.reshape(-1)
-
         self.coord = self.coord.reshape(-1,3) 
+        
+        self.targets = self.targets[self.filter_mask]
+        self.coord = self.coord[self.filter_mask]
         self.weights = torch.tensor([torch.sum(mask[filter_mask] == 0) / torch.sum(mask[filter_mask] == 1)])
         self.transform = transform
         
     def __len__(self):
-        return len(self.filter_mask)
+        return len(self.targets)
     
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         
-        X = self.coord[self.filter_mask[idx]]
-        y = self.targets[self.filter_mask[idx]]
+        X = self.coord[idx]
+        y = self.targets[idx]
 
         if self.training == True:
             # add random noise
             # use 99.995 Quantile of standard normal = 3.890592
             noise = np.random.normal(loc = 0, scale = (1/self.resolution)/3.890592, size = 1)
             if noise > (1/self.resolution):
-                noise = 1/self.resolution
+                noise = 0
             if noise < -(1/self.resolution):
-                noise = -1/self.resolution               
+                noise = 0               
             X[1] = X[1]+noise
             
             noise = np.random.normal(loc = 0, scale = (1/self.resolution)/3.890592, size = 1)
             if noise > (1/self.resolution):
-                noise = 1/self.resolution
+                noise = 0
             if noise < -(1/self.resolution):
-                noise = -1/self.resolution               
+                noise = 0              
             X[2] = X[2]+noise
             
             noise = np.random.normal(loc = 0, scale = (1/self.z_resolution)/3.890592, size = 1)
             if noise > (1/self.z_resolution):
-                noise = 1/self.z_resolution
+                noise = 0
             if noise < -(1/self.z_resolution):
-                noise = -1/self.z_resolution               
+                noise = 0    
             X[0] = X[0]+noise
             
             # correct at boundaries

@@ -12,12 +12,12 @@ import seaborn as sns
 
 use_cuda = True
 use_cuda = False if not use_cuda else torch.cuda.is_available()
-device = torch.device('cuda:0' if use_cuda else 'cpu')
+device = torch.device('cuda:1' if use_cuda else 'cpu')
 torch.cuda.get_device_name(device) if use_cuda else 'cpu'
 print('Using device', device)
 #device = "cpu"
 #####################################################
-model_name = "150k_border_unbalanced" 
+model_name = "no_pos_enc" 
 
 params = {
 # set sizes
@@ -49,7 +49,7 @@ params = {
 "get_weights" : False,
 
 # model type
-"pos_encoding" : True,
+"pos_encoding" : False,
 "skips" : True,
 "siren" : False,
 "spatial_feat" : True,     # use xy-coordinate specific features 

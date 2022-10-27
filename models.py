@@ -3,10 +3,6 @@ from helpers import *
 from render import *
 import torch.nn.functional as F 
 
-#from end2end_helpers import *
-#from Resnet import *
-
-
 class Self_attention_block(torch.nn.Module):
     def __init__(self,
                 num_feat_in = 256, 
@@ -22,23 +18,24 @@ class Self_attention_block(torch.nn.Module):
         # feature reduction
         self.feat_reduction = torch.nn.Linear(num_feat_in, num_feat)
 
-        # define self attention layer
+        # define multihead attention layer
         self.attention = torch.nn.MultiheadAttention(num_feat, 8, dropout = dropout)
 
-        # define linear layers for query, key and values of self attention
+        # define linear layers for query, key and values
         self.query_lin = torch.nn.Linear(num_feat,num_feat)
         self.key_lin = torch.nn.Linear(num_feat,num_feat)
         self.value_lin = torch.nn.Linear(num_feat,num_feat)
 
         self.layer_norm1 = torch.nn.LayerNorm(num_feat)
-        self.layer_norm2 = torch.nn.LayerNorm(num_feat)
+        self.layer_norm2 = torch.nn.LayerNorm(512)
+        self.layer_norm3 = torch.nn.LayerNorm(num_feat)
 
         self.feat_lin1 = torch.nn.Linear(num_feat,512)
         self.feat_lin2 = torch.nn.Linear(512,num_feat)
 
         # feature extension
         self.feat_extentension = torch.nn.Linear(num_feat, num_feat_in)
-        self.layer_norm3 = torch.nn.LayerNorm(num_feat_in)
+        self.layer_norm4 = torch.nn.LayerNorm(num_feat_in)
 
         # ReLU activation
         self.activation = torch.nn.ReLU()
@@ -55,7 +52,7 @@ class Self_attention_block(torch.nn.Module):
         if self.pos_enc == True:
             # positional encoding
             slice_pe = slice_index.unsqueeze(1)
-            slice_pe = 2*(slice_pe/(slice_max)) - 1
+            slice_pe = 2*(slice_pe/(slice_max)) - 1 
             num_enc = z_enc_tmp.shape[1]
 
             slice_pe = positional_encoding(slice_pe.to(z_enc.device), int(num_enc/2), include_input = False, pe_freq = self.pe_freq)
@@ -67,17 +64,19 @@ class Self_attention_block(torch.nn.Module):
         key = self.key_lin(z_enc_tmp)
         value = self.value_lin(z_enc_tmp)
 
-        z_att = self.attention(query, key, value, need_weights = False)[0]
+        z_att = self.attention(query, key, value, need_weights = False)[0]  # no attention weights needed 
         z_att = self.layer_norm1(z_att+z_enc_tmp)
-        z_att = z_att+z_enc_tmp
 
         z = self.feat_lin1(z_att)
+        z = self.layer_norm2(z)
         z = self.activation(z)
+
         z = self.feat_lin2(z)
-        z = self.layer_norm2(z + z_att)
-            
+        z = self.layer_norm3(z)
+        z = self.activation(z)
+        
         z = self.feat_extentension(z)
-        z = self.layer_norm3(z + z_enc)
+        z = self.layer_norm4(z + z_enc)
         z = self.activation(z)
 
         return z
@@ -86,7 +85,6 @@ class Attention_block(torch.nn.Module):
     def __init__(self,
                 num_feat = 256, 
                 pos_encoding = True,
-                dropout = 0.1,
                 pe_freq = "2pi"):
 
         super(Attention_block, self).__init__()
@@ -94,7 +92,7 @@ class Attention_block(torch.nn.Module):
         self.pos_encoding = pos_encoding
         self.pe_freq = pe_freq
 
-        # define self attention layer
+        # define multihead attention
         self.attention = torch.nn.MultiheadAttention(num_feat, 8, dropout = 0.0, batch_first = True)
 
         # define linear layers for query, key and values of self attention
@@ -103,7 +101,8 @@ class Attention_block(torch.nn.Module):
         self.value_lin = torch.nn.Linear(num_feat,num_feat)
 
         self.layer_norm1 = torch.nn.LayerNorm(num_feat)
-        self.layer_norm2 = torch.nn.LayerNorm(num_feat)
+        self.layer_norm2 = torch.nn.LayerNorm(512)
+        self.layer_norm3 = torch.nn.LayerNorm(num_feat)
 
         self.feat_lin1 = torch.nn.Linear(num_feat,512)
         self.feat_lin2 = torch.nn.Linear(512,num_feat)
@@ -136,13 +135,15 @@ class Attention_block(torch.nn.Module):
 
         # let z axis attent to slice features
         x_att, att_weights = self.attention(query, key, value, need_weights = True)
+        
         x_att = self.layer_norm1(x_att.squeeze()+x_in)
 
         x = self.feat_lin1(x_att)
+        x = self.layer_norm2(x)
         x = self.activation(x)
+        
         x = self.feat_lin2(x)
-
-        x = self.layer_norm2(x + x_in)
+        x = self.layer_norm3(x + x_in)
         x = self.activation(x)
 
         return x, att_weights
@@ -243,7 +244,7 @@ class Encoder(torch.nn.Module):
         ########################### ATTENTION BLOCKS ###########################################
         self.att_blocks_weights = torch.nn.ModuleList()   
         for i in range(int(num_feat_out/32)):
-            self.att_blocks_weights.append(Attention_block(32, dropout = 0., pe_freq = pe_freq))
+            self.att_blocks_weights.append(Attention_block(32, pe_freq = pe_freq))
         self.reduce_xy = nn.Linear(num_feat_out_xy * num_blocks, num_feat_out_xy)
 
 
@@ -301,7 +302,7 @@ class Encoder(torch.nn.Module):
         z_slice = torch.cat(x_att,1) 
 
         if self.spatial_feat == True:
-            ############## XY FEATURES #############
+            ############## INTERPOLATION PATH #############
             z_xy_list = []
 
             grid = x_in[:,1:].reshape(-1,1,1,2)
@@ -331,7 +332,6 @@ class Encoder(torch.nn.Module):
         else: # slice only model
             z_out = z_slice
 
-        z_out = F.relu(z_out)
         z_out = F.dropout(z_out, p = self.dropout)
 
         if self.get_weights == True:
@@ -487,15 +487,15 @@ class ISAS(torch.nn.Module):
                  num_feat_out = 64,
                  num_encoding_functions = 6,
                  num_blocks = 5,
-                 skips = False,
+                 skips = True,
                  dropout = 0.,
                  spatial_feat = True,
                  global_feat = False,
                  img_resolution = 128,
-                 num_feat_out_xy = 16,
-                 layer_norm = False,
+                 num_feat_out_xy = 32,
+                 layer_norm = True,
                  batch_norm = False,
-                 pe_freq = "2pi",
+                 pe_freq = "2",
                  get_weights = False,
                  **_):
 
@@ -551,7 +551,7 @@ class ISAS(torch.nn.Module):
 
         return x
 
-
+# model without implicit decoder
 class ISAS_enc_only(torch.nn.Module):
     def __init__(self, num_layer = 5, 
                  num_nodes = 512, 
@@ -729,9 +729,7 @@ class UNet(torch.nn.Module):
         super(UNet, self).__init__() 
         self.img_mean = nn.parameter.Parameter(torch.tensor(0.), requires_grad = False)
         self.img_std = nn.parameter.Parameter(torch.tensor(1.), requires_grad = False) 
-        
-        # self.img_mean = nn.parameter.Parameter(torch.Tensor([0.]), requires_grad = False)
-        # self.img_std = nn.parameter.Parameter(torch.Tensor([1.]), requires_grad = False) 
+
         self.feat_ext = FeatExt(feat = feat, num_blocks = num_blocks)
         self.conv_last = nn.Conv2d(feat, 1, 1, padding="same", padding_mode = "reflect")
         self.sigmoid = torch.nn.Sigmoid()

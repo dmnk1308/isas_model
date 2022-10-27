@@ -18,7 +18,7 @@ torch.cuda.get_device_name(device) if use_cuda else 'cpu'
 print('Using device', device)
 #device = "cpu"
 #####################################################
-model_name = "no_decoder" 
+model_name = "ISAS_model" 
 
 params = {
 # set sizes
@@ -51,7 +51,7 @@ params = {
 
 # model type
 "augmentations": True,
-"pos_encoding" : False,
+"pos_encoding" : True,
 "skips" : True,
 "siren" : False,
 "spatial_feat" : True,     # use xy-coordinate specific features 
@@ -66,27 +66,16 @@ params = {
 #####################################################
 
 # setup model 
-model = ISAS_enc_only(**params)
+model = ISAS(**params)
 model.to(device)
-
-# load
-# pretrained_dict = torch.load("model_checkpoints/final_models/" + params["model_name"] +".pt", map_location = device)
-# model_dict = model.state_dict()
-
-# # 1. filter out unnecessary keys
-# pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-# # 2. overwrite entries in the existing state dict
-# model_dict.update(pretrained_dict) 
-# # 3. load the new state dict
-# model.load_state_dict(pretrained_dict)
 
 model.load_state_dict(torch.load("model_checkpoints/final_models/" + params["model_name"] +".pt", map_location = device))
 print("Model loaded.")
 
 # test
 model.eval()
-lungs = params["test_lungs"]
-#lungs = [284,6]
+#lungs = params["test_lungs"]
+lungs = [284,6]
 
 # load lungs to visualize
 _, img_list, mask_list = load_data(lungs, 
@@ -103,9 +92,7 @@ acc_list = []
 
 # loop over lungs
 for i, img, mask in tqdm(zip(lungs, img_list, mask_list)):
-    #img = torch.from_numpy(resize(img, 5))
 
-    #mask = torch.from_numpy(resize(mask, 48))    
     img_raw = img
     mask_raw = mask
 
@@ -114,26 +101,17 @@ for i, img, mask in tqdm(zip(lungs, img_list, mask_list)):
 
     mask = mask.moveaxis(0,-1)
     if params["get_weights"] == True:
-        pred, att = model_to_voxel(model,device=device, img = img, resolution =  mask.shape[1], z_resolution= mask.shape[2], max_batch = params["batch_size_val"], slice_index = slice_index, slice_max = slice_max, get_weights = True)   
-        #np.save("att_lung_"+str(i)+".npy", att)
+        pred, att = model_to_voxel(model,device=device, img = img,resolution =  mask.shape[1], z_resolution= mask.shape[2], max_batch = params["batch_size_val"], slice_index = slice_index, slice_max = slice_max, get_weights = True)   
 
     else:
         pred = model_to_voxel(model,device=device, img = img, resolution =  mask.shape[1], z_resolution= mask.shape[2], max_batch = params["batch_size_val"], slice_index = slice_index, slice_max = slice_max)   
     pred = pred.cpu().numpy()
     pred = np.moveaxis(pred,-1,0)
-    #pred = resize(pred, 48)
 
     level = 0.0
     
-    #get_ply(mask = pred, ply_filename = "dump/ISAS_"+model_name+"_lung_"+str(i), from_mask = True, resolution =  params["shape_resolution"], level = level, device = device)
-    # pred = torch.sigmoid(torch.from_numpy(pred)).numpy()
-    # pred = np.where(pred>level,1,0)
-    # pred = torch.from_numpy(pred)
-    pred = torch.round(torch.sigmoid(torch.from_numpy(pred)))
-        
-    # for j, slice in enumerate(pred):
-    #     slice = torch.round(slice)
-    #     plt.imsave("exp_interpol/lung_"+str(i)+"_"+str(j)+"_ISAS.png", slice, cmap = "gray")    
+    get_ply(mask = pred, ply_filename = "dump/ISAS_"+model_name+"_lung_"+str(i), from_mask = True, resolution =  params["shape_resolution"], level = level, device = device)
+    pred = torch.round(torch.sigmoid(torch.from_numpy(pred)))  
     
     pred = pred.moveaxis(0,-1)
     dice =  dice_coef(pred,mask)
