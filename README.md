@@ -13,10 +13,10 @@ __Encoder__<br>
 <img src="figures/Architecture/Encoder.jpg" />
 
 __Blocks__<br>
-<img src="figures/Architecture/Blocks.jpg" width="600" />
+<img src="figures/Architecture/Blocks.jpg"  />
 
 __Decoder__<br>
-<img src="figures/Architecture/Decoder.jpg" width="400" />
+<img src="figures/Architecture/Decoder.jpg" width="800" />
 
 
 # Results
