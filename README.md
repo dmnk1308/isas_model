@@ -21,7 +21,7 @@ __Decoder__<br>
 
 # Results
 ## Trainable Features
-![](figures/Gifs/trainable_feat.gif)  
+![](figures/Gifs/no_encoder.gif)  
 
 ## Benchmarking
 __Main Models (3D)__  
